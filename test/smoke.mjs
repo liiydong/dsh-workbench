@@ -386,6 +386,14 @@ check('inject 声明了 slots', client.inject.includes('slots'))
 /* ==================== 注册座位 ==================== */
 
 const registrations = []
+const tabRegistrations = []
+/** 桩 better-sidebar 的客户端服务：只实现 registerTab。 */
+const fakeBetterSidebar = {
+	registerTab(descriptor) {
+		tabRegistrations.push(descriptor)
+		return () => {}
+	}
+}
 const fakeCtx = {
 	slots: {
 		inject(name, factory) {
@@ -396,6 +404,13 @@ const fakeCtx = {
 			registrations.push({ definition, component })
 			return () => {}
 		}
+	},
+	get(name) {
+		return name === 'betterSidebar' ? fakeBetterSidebar : undefined
+	},
+	effect(factory) {
+		factory()
+		return () => {}
 	}
 }
 client.apply(fakeCtx)
@@ -405,6 +420,46 @@ const mainEntry = registrations.find((r) => r.definition.name === 'main')
 check('注册了 sidebar.panellist 图标', panelEntry !== undefined)
 check('注册了 main 面板', mainEntry !== undefined)
 check('两处 id 对应（侧栏图标 ↔ 主面板）', panelEntry?.definition.id === 'workbench' && mainEntry?.definition.key === 'workbench')
+
+/* ==================== 双落点：better-sidebar 页签 ==================== */
+
+check('同时注册了 better-sidebar 页签', tabRegistrations.length === 1, `实际 ${tabRegistrations.length}`)
+check('页签 id 唯一且带包名前缀', tabRegistrations[0]?.id === 'dsh-workbench', String(tabRegistrations[0]?.id))
+check('页签标题是中文「工作台」', tabRegistrations[0]?.title() === '工作台')
+check('页签带一行说明（+ 菜单里会显示）', typeof tabRegistrations[0]?.description?.() === 'string' && tabRegistrations[0].description().length > 8)
+check('页签声明单实例（不重复开）', tabRegistrations[0]?.single === true)
+check('页签图标能渲染出 svg', typeof tabRegistrations[0]?.icon === 'function' && expand(createElement(tabRegistrations[0].icon, { size: 16 }), 'tabicon').host === 'svg')
+check('页签组件就是工作台面板', tabRegistrations[0]?.component === client.__internals.WorkbenchPanel)
+
+// 没装 better-sidebar 时：不报错、官方两处座位照常
+const bareRegistrations = []
+const bareCtx = {
+	slots: {
+		inject(name, factory) {
+			factory()
+			return () => {}
+		},
+		register(definition, component) {
+			bareRegistrations.push({ definition, component })
+			return () => {}
+		}
+	},
+	get() {
+		return undefined
+	},
+	effect(factory) {
+		factory()
+		return () => {}
+	}
+}
+let bareThrew = false
+try {
+	client.apply(bareCtx)
+} catch {
+	bareThrew = true
+}
+check('没装 better-sidebar 时不报错', bareThrew === false)
+check('没装时官方两处座位照常注册', bareRegistrations.length === 2)
 check('图标标签可读', panelEntry?.definition.label() === '工作台')
 
 const iconTree = expand(createElement(panelEntry.component, { size: 18, active: true }), 'icon')
