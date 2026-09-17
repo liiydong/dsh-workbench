@@ -112,9 +112,19 @@ dsh plugin --profile web add github:liiydong/dsh-workbench
 
 装完**必须重启 `dsh web`**：客户端 bundle 在组合阶段被快照进内存，刷新页面不够。
 
-```sh
-# 重启后左栏出现「工作台」图标
-```
+### 两个落点（装了 dsh-better-sidebar 时两边都在）
+
+| 落点 | 出现在哪 | 条件 |
+|---|---|---|
+| 官方左栏面板座位 | 系统左栏的面板图标行（`sidebar.panellist` + `main`） | 总是注册 |
+| better-sidebar 页签 | `dsh-better-sidebar` 的面板菜单（和「文件」「文件变动」「终端」并列） | 装了 better-sidebar 时额外注册 |
+
+两条路互不影响，注册都挂在插件 fiber 上，卸载即消失。better-sidebar 是**可选**依赖：
+读不到（`ctx.get('betterSidebar')` 返回 undefined）就只走官方座位，不会报错、也不会让插件挂起。
+
+> 别和 better-sidebar 自带的「**文件变动**」页签搞混：那个是「这次会话里 AI 碰过哪些文件」（会话镜头）
+> 加「仓库工作区改动」（Git 镜头，要求目录是 git 仓库）。
+> 本插件的「迭代」是**落在磁盘上的永久记录** —— 跨会话、跨天、跨产线，带这一版的摘要、快照路径和你审批的状态。
 
 卸载：
 
