@@ -265,10 +265,89 @@ const DOCS = {
 }
 
 const requests = []
-async function fakeFetch(url) {
-	requests.push(url)
+/** 审批状态存在桩里：POST /decide 之后再 GET /history 应该看得到变化。 */
+const decisions = new Map()
+const DEMO_DIR = 'C:\\demo\\thesis-workbench'
+
+const ROUND_DEFS = [
+	{
+		id: '20260911T2210-毕业论文-3',
+		at: 1789000200000,
+		day: '2026-09-11',
+		line: '毕业论文',
+		artifact: '论文全文.docx',
+		snapshot: '.versions/20260911T2210-论文全文.docx',
+		kind: 'docx',
+		bytes: 38000,
+		bytesText: '37.1 KB',
+		tool: 'python thesis_docx.py',
+		by: 'dsh',
+		summary: '第3章：修正乙苯转化率 0.62→0.58，重算全表',
+		sources: [{ path: '03-第三章-物料衡算.md', note: '' }]
+	},
+	{
+		id: '20260910T1400-毕业论文-2',
+		at: 1788900000000,
+		day: '2026-09-10',
+		line: '毕业论文',
+		artifact: '论文全文.docx',
+		snapshot: '.versions/20260910T1400-论文全文.docx',
+		kind: 'docx',
+		bytes: 36000,
+		bytesText: '35.2 KB',
+		tool: 'python thesis_docx.py',
+		by: 'dsh',
+		summary: '第二章重写：按精馏/萃取/吸附重新组织文献',
+		sources: [{ path: '02-第二章-文献综述.md', note: '' }]
+	},
+	{
+		id: '20260909T0900-流程模拟-1',
+		at: 1788800000000,
+		day: '2026-09-09',
+		line: 'Aspen流程模拟',
+		artifact: '工艺流程图.pdf',
+		snapshot: '.versions/20260909T0900-工艺流程图.pdf',
+		kind: 'pdf',
+		bytes: 180000,
+		bytesText: '175.8 KB',
+		tool: 'python export_pfd.py',
+		by: 'dsh',
+		summary: '补流程图导出脚本，PFD 自动出图',
+		sources: [{ path: '流程说明.md', note: '' }]
+	}
+]
+
+function historyBody() {
+	const lines = new Map()
+	for (const round of ROUND_DEFS) {
+		const state = decisions.get(round.id) ?? 'pending'
+		const bucket = lines.get(round.line) ?? { name: round.line, rounds: [], counts: { pending: 0, approved: 0, rejected: 0 }, artifacts: [], kinds: [] }
+		bucket.rounds.push({ ...round, approval: { state, at: 0, by: state === 'pending' ? '' : 'liyadong', note: '' } })
+		bucket.counts[state] += 1
+		if (!bucket.artifacts.includes(round.artifact)) bucket.artifacts.push(round.artifact)
+		if (!bucket.kinds.includes(round.kind)) bucket.kinds.push(round.kind)
+		bucket.days = [...new Set(bucket.rounds.map((r) => r.day))].sort().reverse()
+		lines.set(round.line, bucket)
+	}
+	const list = [...lines.values()]
+	const totals = { rounds: ROUND_DEFS.length, pending: 0, approved: 0, rejected: 0, lines: list.length }
+	for (const line of list) for (const key of ['pending', 'approved', 'rejected']) totals[key] += line.counts[key]
+	return { dir: DEMO_DIR, exists: true, truncated: false, totals, lines: list }
+}
+
+async function fakeFetch(url, options) {
+	const method = options?.method ?? 'GET'
+	requests.push(method === 'POST' ? `POST ${url} ${options.body}` : url)
+	if (method === 'POST' && url.includes('/decide')) {
+		const payload = JSON.parse(options.body)
+		if (!['approved', 'rejected', 'pending'].includes(payload.state)) return { status: 400, async text() { return JSON.stringify({ error: 'bad state' }) } }
+		decisions.set(payload.id, payload.state)
+		return { status: 200, async text() { return JSON.stringify({ ok: true, id: payload.id, state: payload.state }) } }
+	}
 	let body
-	if (url.includes('/skills')) body = { complete: true, cwd: '', skills: SKILLS }
+	if (url.includes('/demo')) body = { dir: DEMO_DIR, exists: true }
+	else if (url.includes('/history?')) body = historyBody()
+	else if (url.includes('/skills')) body = { complete: true, cwd: '', skills: SKILLS }
 	else if (url.includes('/skill?')) body = { name: 'doc-iteration-control', content: '# 文档迭代控制\n\nMarkdown 是唯一的源。', path: 'C:\\Users\\me\\.agents\\skills\\doc-iteration-control\\SKILL.md' }
 	else if (url.includes('/workspaces')) body = { workspaces: [{ id: 'w1', path: 'D:\\dsh-tui-lyd', title: 'dsh-tui-lyd' }] }
 	else if (url.includes('/docs?')) body = DOCS
@@ -332,12 +411,53 @@ const iconTree = expand(createElement(panelEntry.component, { size: 18, active: 
 check('图标渲染出 svg', iconTree.host === 'svg', String(iconTree.host))
 check('图标有中文 aria-label', iconTree.props['aria-label'] === '工作台')
 
-/* ==================== 技能库页 ==================== */
+/* ==================== 迭代页（默认打开） ==================== */
 
 const Panel = mainEntry.component
 let tree = await settle(createElement(Panel, {}))
 
-check('技能页默认打开', allText(tree).includes('技能库'))
+check('默认打开迭代页', allText(tree).includes('载入演示'))
+check('提示说明工作模式', allText(tree).includes('你审没审') || allText(tree).includes('AI 改 md'))
+
+const demoButton = clickable(tree, '载入演示')
+check('找到「载入演示」按钮', demoButton !== undefined)
+demoButton.props.onClick()
+tree = await settle(createElement(Panel, {}))
+check('取了演示目录', requests.some((url) => url.includes('/demo')))
+check('按目录拉了历史', requests.some((url) => url.includes('/history?dir=')))
+check('渲染出产线分组', allText(tree).includes('毕业论文') && allText(tree).includes('Aspen流程模拟'))
+check('渲染出轮次摘要', allText(tree).includes('修正乙苯转化率'))
+check('渲染出按天小节', allText(tree).includes('2026-09-11'))
+check('显示审批状态徽章', allText(tree).includes('待我审'))
+
+// 悬停 → 摘要卡
+const hoverRow = findAll(tree, (node) => node.host === 'div' && allText(node).includes('修正乙苯转化率') && typeof node.props.onMouseEnter === 'function')[0]
+check('轮次行可悬停', hoverRow !== undefined)
+hoverRow.props.onMouseEnter({ currentTarget: { getBoundingClientRect: () => ({ top: 120, right: 260 }) } })
+tree = await settle(createElement(Panel, {}))
+check('悬停出现摘要卡', allText(tree).includes('快照：') && allText(tree).includes('python thesis_docx.py'))
+check('摘要卡带改动来源', allText(tree).includes('03-第三章-物料衡算.md'))
+
+// 点击 → 审批
+const pickRow = findAll(tree, (node) => node.host === 'div' && allText(node).includes('修正乙苯转化率') && typeof node.props.onClick === 'function')[0]
+check('轮次行可点击', pickRow !== undefined)
+pickRow.props.onClick()
+tree = await settle(createElement(Panel, {}))
+const approve = clickable(tree, '通过')
+check('出现「通过」按钮', approve !== undefined)
+approve.props.onClick()
+tree = await settle(createElement(Panel, {}))
+check('发出了审批写请求', requests.some((r) => r.startsWith('POST') && r.includes('/decide') && r.includes('"state":"approved"')))
+check('写完后重新拉取历史', requests.filter((url) => url.includes('/history?dir=')).length >= 2)
+check('该轮变成「已通过」', allText(tree).includes('已通过'))
+
+/* ==================== 技能库页 ==================== */
+
+const skillsTab = clickable(tree, '技能库')
+check('找到「技能库」页签', skillsTab !== undefined)
+skillsTab.props.onClick()
+tree = await settle(createElement(Panel, {}))
+
 check('技能目录已拉取', requests.some((url) => url.includes('/skills')))
 check('列出全部三个技能', ['doc-iteration-control', 'book-to-skill', 'cordis-plugin-development'].every((name) => allText(tree).includes(name)))
 check('显示来源徽章', allText(tree).includes('用户 · .agents') && allText(tree).includes('内置'))
@@ -396,8 +516,9 @@ check('配对状态表齐全', ['stale', 'orphan', 'pending', 'ok'].every((key) 
 const hostSource = readFileSync(HOST, 'utf8')
 check('宿主半侧导出 name', /export const name = 'dsh-workbench'/.test(hostSource))
 check('宿主半侧 inject 含 webServer', /export const inject = \['webServer'\]/.test(hostSource))
-check('宿主半侧注册的是只读 GET 路由', hostSource.includes("req.method !== 'GET'") && hostSource.includes('只支持 GET'))
-check('宿主半侧不写文件', !/writeFile|appendFile|mkdir|rm\(/.test(hostSource))
+check('宿主半侧接受 GET/POST 两种方法', hostSource.includes('只支持 GET / POST'))
+check('唯一的写操作是追加审批记录', /appendFile/.test(hostSource) && !/writeFile|mkdirSync|rmSync/.test(hostSource))
+check('写路径做了越界检查', hostSource.includes('目标路径越界'))
 const host = await import(`file://${HOST.replace(/\\/g, '/')}`)
 check('宿主半侧可被 Node 直接加载', typeof host.apply === 'function')
 check('主干名解析正确', host.__internals.stemOf('03_第三章.docx') === '03_第三章')

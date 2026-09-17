@@ -1,27 +1,85 @@
 # dsh-workbench
 
 > 给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) Web 端加一个「工作台」面板：
-> **技能库**（看机器上所有技能、读全文）+ **文档迭代看板**（md 源与 docx/pdf 产物配对，把「产物比源旧」挑到最前面）。
+> **迭代**（AI 改 md → 生成 Word → 你审这一版，一条时间轴看全）、
+> **技能库**（看机器上所有技能、读全文）、
+> **文档**（md 源与 docx/pdf 产物配对，把「产物比源旧」挑到最前面）。
 
-DSH Web 插件 · 零依赖 · 纯只读 · 左栏一个图标，主区域一个面板。
+DSH Web 插件 · 零依赖 · 只读为主（唯一的写是记审批）· 左栏一个图标，主区域一个面板。
 
 ---
 
 ## 它解决什么
 
-**一、技能散在好几个地方，看不见也搜不到。**
+**一、AI 把文档迭代得像代码，但你看不见这条线。**
+AI 改 30 次 `.md`，每次生成一份 Word 给你 —— 中间那些版本**全部同名覆盖，消失了**；
+你看到永远只有最新一版，也不知道这版跟前一版差在哪。
+
+**二、技能散在好几个地方，看不见也搜不到。**
 一个 DSH 技能可能来自项目层（`.agents/skills`）、用户层（`~/.agents/skills`）、内置层……想知道
 「我到底装了哪些技能、那个技能到底写了什么」，得挨个目录翻。
 
-**二、用 AI 改文档时，源和产物会脱节。**
+**三、用 AI 改文档时，源和产物会脱节。**
 Markdown 是源，docx/pdf 是产物。改完 md 忘了重新生成 → 交出去的 Word 里是旧内容。
-这种事肉眼不看文件名和修改时间根本发现不了。
 
-这个插件把这两件事放进同一个面板。
+这个插件把这三件事放进同一个面板。
 
 ## 界面
 
-点左栏的「工作台」图标，主区域出现面板，两个页签：
+点左栏的「工作台」图标，主区域出现面板，三个页签：
+
+### 迭代（默认）
+
+把「AI 改文档」这件事变成一条看得见的时间轴：
+
+- 按**产线**分组（毕业论文 / Aspen 流程模拟 / 经济分析…），产线内**按天分小节**，一轮一行；
+- 每轮显示：时间、产物类型（Word / PDF / Excel）、**这一版干了什么**、改自哪几个 md、审批状态；
+- **鼠标悬停**任一版 → 浮出摘要卡：摘要、产出时间与体积、生成方式（哪条命令）、改动来源、快照路径、你的历史意见；
+- 点开一轮 → 【通过】【要改】【重置为待审】，写进记录文件；
+- 顶部按状态（待我审 / 已通过 / 要改）、产线、类型筛选。
+
+**「载入演示」** 一键加载插件自带的假数据（`examples/thesis-workbench/`，3 条产线 27 轮），
+先看效果再决定要不要用。
+
+### 记录格式
+
+时间轴不是猜出来的，是**产出那一刻记下来的**。每个产线目录下：
+
+```
+产线/
+├── *.md                        ← 源（AI 改的就是这些）
+├── 论文全文.docx                ← 工作副本，名字永远不变（每次覆盖）
+└── .versions/
+    ├── produced.jsonl          ← 产出记录：追加一行一条
+    ├── decisions.jsonl         ← 你的审批：追加一行一次
+    └── 20260911T2210-论文全文.docx   ← 快照（这才叫版本存在）
+```
+
+`produced.jsonl` 一行：
+
+```json
+{"id":"20260911T2210-毕业论文-3","at":1789000200000,"line":"毕业论文",
+ "artifact":"论文全文.docx","snapshot":".versions/20260911T2210-论文全文.docx",
+ "kind":"docx","bytes":38000,"tool":"python thesis_docx.py","by":"dsh",
+ "sources":[{"path":"03-第三章-物料衡算.md"}],
+ "summary":"第3章：修正乙苯转化率 0.62→0.58，重算全表"}
+```
+
+`decisions.jsonl` 一行：
+
+```json
+{"id":"20260911T2210-毕业论文-3","at":1789007400000,"state":"rejected","by":"liyadong","note":"热量衡算和物料衡算对不上"}
+```
+
+`state` ∈ `approved` / `rejected` / `pending`；同一个 id 以**最后一条**为准（追加式，不改历史）。
+
+工作模式就是这条循环：
+
+```
+AI 改 .md  →  跑脚本生成 docx/pdf/xlsx  →  写 produced.jsonl + 存快照
+   ↑                                                    ↓
+   └────── 你给反馈 ←── 你在插件里审 Word ←──────────────┘
+```
 
 ### 技能库
 
@@ -41,10 +99,6 @@ Markdown 是源，docx/pdf 是产物。改完 md 忘了重新生成 → 交出�
 | 🟠 无源产物 | 只有产物没有同名源（历史遗留） |
 | ⚪ 未生成产物 | 源还没有对应产物 |
 | 🟢 已同步 | 产物不比源旧 |
-
-和文档迭代纪律（Markdown 是唯一源、Word/PDF 是产物）是同一条规矩的两半：
-那边是操作纪律（本机以技能 `doc-iteration-control` 的形式装在两处技能目录里），
-这边是「一眼看出哪里违规」的仪表盘。
 
 ## 安装
 
@@ -70,46 +124,59 @@ dsh plugin --profile web remove dsh-workbench
 
 ## 它怎么拿到数据
 
-宿主半侧只有 4 条**只读** JSON 路由，全部在 `/api/dsh-workbench/` 下：
+宿主半侧只有 7 条 JSON 路由，全部在 `/api/dsh-workbench/` 下：
 
-| 路由 | 数据来源 |
-|---|---|
-| `GET /skills?cwd=` | `ctx.skills.snapshot()` —— 核心技能注册表 |
-| `GET /skill?name=&cwd=` | `ctx.skills.get()` —— 单个技能全文 |
-| `GET /docs?dir=` | `node:fs/promises` 扫目录 + 源产物配对 |
-| `GET /workspaces` | `ctx.workspaceRegistry.list()` |
+| 路由 | 方法 | 数据来源 |
+|---|---|---|
+| `/skills?cwd=` | GET | `ctx.skills.snapshot()` —— 核心技能注册表 |
+| `/skill?name=&cwd=` | GET | `ctx.skills.get()` —— 单个技能全文 |
+| `/docs?dir=` | GET | `node:fs/promises` 扫目录 + 源产物配对 |
+| `/workspaces` | GET | `ctx.workspaceRegistry.list()` —— 目录下拉 |
+| `/history?dir=` | GET | 读各产线的 `.versions/produced.jsonl` + `decisions.jsonl` |
+| `/demo` | GET | 插件自带演示项目的绝对路径 |
+| `/decide` | POST | **唯一的写操作**：往 `<产线>/.versions/decisions.jsonl` 追加一行审批 |
 
-**不写任何文件，不发任何模型调用，不采集遥测。** 浏览器半侧只负责画。
+写路径做了越界检查（只允许写根目录的直接子目录，拒绝 `..`、分隔符与非法状态）。
+除此之外**不写任何文件，不发任何模型调用，不采集遥测**。
 
 ## 开发
 
 ```
 dsh-workbench/
-├── package.json          # dsh.bundle.patch + dsh.client.platform
+├── package.json          # dsh.bundle.patch + dsh.client.platform + dsh.engines.dsh
 ├── cordis.patch.yml      # 把宿主行插进 profile 名册
 ├── lib/
-│   ├── index.js          # 宿主半侧：4 条只读路由（ESM，零依赖）
-│   └── client.js         # 浏览器半侧：侧栏图标 + 面板（手写 __ModuleLoader__ bundle，无构建步骤）
+│   ├── index.js          # 宿主半侧：7 条路由（ESM，零依赖）
+│   └── client.js         # 浏览器半侧：侧栏图标 + 三个页签（手写 __ModuleLoader__ bundle，无构建步骤）
+├── examples/
+│   ├── make-demo.mjs     # 生成演示项目（假内容、真结构）
+│   └── thesis-workbench/ # 演示数据：3 条产线 27 轮
 └── test/
-    ├── smoke.mjs         # 组件树自检：桩掉 __ModuleLoader__ + 迷你 React，42 项
-    └── host-routes.mjs   # 路由自检：假 req/res + 真实文件系统扫描，28 项
+    ├── smoke.mjs         # 组件树自检：桩 __ModuleLoader__ + 迷你 React，60 项
+    └── host-routes.mjs   # 路由自检：假 req/res + 真实文件系统扫描 + 真写一次审批，46 项
 ```
 
 ```sh
 node test/smoke.mjs
-node test/host-routes.mjs          # 可选参数：要扫描的目录
+node test/host-routes.mjs          # 可选参数：/docs 要扫描的目录
+node examples/make-demo.mjs        # 重新生成演示数据
 ```
 
 两套自检都**不需要浏览器**：客户端 bundle 的 `factory` 与组件都是普通函数，在 Node 里可直接跑
 （迷你 React 运行时按组件实例分配 hook 槽、按「组件类型 + hook 序号」去重 effect、在渲染循环里展开整棵树）。
+`host-routes.mjs` 还会在系统临时目录里真写一次审批，验证「追加一行 → 再读就变了」这条回路。
 抓得到崩溃与状态流转错误，抓不到布局观感。
 
 ## 已知限制
 
 - 界面观感只过了组件树自检，**未做人工视觉验证**；浅色/深色都做了适配但与真实主题的贴合度可能还要调。
+- **记录要靠产出方写。** 插件只负责显示 `.versions/produced.jsonl` 里有的东西 ——
+  谁来写？目前是产出文件的那一方（AI 跑脚本时、或你的导出脚本里）追加一行。
+  插件本身不会去猜"这个文件是什么时候被谁生成的"：猜出来的摘要不如没有。
+- 历史上已经同名覆盖掉的版本，**找不回来**（快照是从设了记录器之后才开始存的）。
 - 「产物过期」按**文件修改时间**判定，不看内容。生成脚本若先 touch 产物再写内容，判定会偏乐观。
-- 只读：面板不能帮你重新生成产物、也不能提交 git。看到了过期，动作还得自己（或让 agent）做。
-- 目录扫描不递归，只扫一层。
+- 目录扫描不递归，只扫一层；一次最多返回 1000 轮。
+- 审批写的是记录文件，**不会**真的去改动或回滚你的 Word。
 
 ## License
 
