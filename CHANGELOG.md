@@ -36,14 +36,14 @@
   `/decide`（POST）是**唯一**的写操作，只往 `<产线>/.versions/decisions.jsonl` 追加一行，带路径越界与状态校验。
 - 零运行时依赖：宿主半侧只用 `node:*`，客户端半侧只用外壳提供的 react 与浏览器 `fetch`。
 
-### 两个落点
+### 工作台出现在哪里
 
 | 落点 | 出现在哪 | 条件 |
 |---|---|---|
 | 官方左栏面板座位 | 系统左栏的面板图标行（`sidebar.panellist` + `main`） | 总是注册 |
-| better-sidebar 页签 | `dsh-better-sidebar` 的面板菜单 | 装了 better-sidebar 时额外注册 |
+| 侧栏页签 | 若装了 `dsh-better-sidebar`，工作台也会作为它的一个页签出现 | 装了才注册 |
 
-better-sidebar 是可选依赖（`ctx.get('betterSidebar')`），读不到就只走官方座位，不报错、不挂起。
+`dsh-better-sidebar` 是可选依赖（`ctx.get('betterSidebar')`），读不到就只走官方座位，不报错、不挂起。
 
 ### 演示数据
 

@@ -112,19 +112,18 @@ dsh plugin --profile web add github:liiydong/dsh-workbench
 
 装完**必须重启 `dsh web`**：客户端 bundle 在组合阶段被快照进内存，刷新页面不够。
 
-### 两个落点（装了 dsh-better-sidebar 时两边都在）
+### 工作台出现在哪里
 
 | 落点 | 出现在哪 | 条件 |
 |---|---|---|
 | 官方左栏面板座位 | 系统左栏的面板图标行（`sidebar.panellist` + `main`） | 总是注册 |
-| better-sidebar 页签 | `dsh-better-sidebar` 的面板菜单（和「文件」「文件变动」「终端」并列） | 装了 better-sidebar 时额外注册 |
+| 侧栏页签 | 若你装了 `dsh-better-sidebar`，工作台也会作为它的一个页签出现 | 装了才注册 |
 
-两条路互不影响，注册都挂在插件 fiber 上，卸载即消失。better-sidebar 是**可选**依赖：
-读不到（`ctx.get('betterSidebar')` 返回 undefined）就只走官方座位，不会报错、也不会让插件挂起。
+两条路互不影响，注册都挂在插件 fiber 上，卸载即消失。`dsh-better-sidebar` 是**可选**依赖：
+读不到（`ctx.get('betterSidebar')` 返回 undefined）就只走官方座位，不报错、也不会让插件挂起。
 
-> 别和 better-sidebar 自带的「**文件变动**」页签搞混：那个是「这次会话里 AI 碰过哪些文件」（会话镜头）
-> 加「仓库工作区改动」（Git 镜头，要求目录是 git 仓库）。
-> 本插件的「迭代」是**落在磁盘上的永久记录** —— 跨会话、跨天、跨产线，带这一版的摘要、快照路径和你审批的状态。
+> 「迭代」页展示的是**落在磁盘上的永久记录** —— 跨会话、跨天、跨产线，
+> 每一版都带着这一版的摘要、快照路径和你审批的状态。
 
 卸载：
 
@@ -195,9 +194,9 @@ node examples/make-demo.mjs        # 重新生成演示数据
 - **演示数据全是编的**（`examples/thesis-workbench/`，3 条产线 27 轮），不含任何真实文档或个人信息；
   仓库里不含本机路径、姓名或邮箱，提交作者统一使用 GitHub 的 noreply 邮箱。
 - 以 **MIT** 发布（见 `LICENSE`）。
-- 第三方接口说明：与 `dsh-better-sidebar` 的集成只使用它公开的客户端服务契约
-  （`ctx.betterSidebar.registerTab`），未复制其代码；该契约按其文档是版本化的（`SIDEBAR_FEATURES`），
-  所以本插件把它当作**可选**依赖处理。
+- 第三方接口说明：与 `dsh-better-sidebar` 的集成使用它**公开的**客户端服务契约
+  （`ctx.betterSidebar.registerTab`），未复制其代码。该契约按其文档是版本化的（`SIDEBAR_FEATURES`），
+  所以本插件把它当作**可选**依赖：读不到就只走官方座位。
 
 ## License
 
