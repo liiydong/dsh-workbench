@@ -225,6 +225,19 @@ check('/decide 只接受 POST', result.status === 405, String(result.status))
 
 await rm(tempRoot, { recursive: true, force: true })
 
+/* ==================== /docs 的「导出两层尾巴」配对 ==================== */
+
+const pairRoot = await mkdtemp(join(tmpdir(), 'dsh-workbench-pair-'))
+await writeFile(join(pairRoot, '报告.md'), '# 报告\n', 'utf8')
+await writeFile(join(pairRoot, '报告.docx'), 'docx', 'utf8') // 比 md 新
+await writeFile(join(pairRoot, '报告.docx.pdf'), 'pdf', 'utf8') // 从 docx 打印出来的，带两层尾巴
+
+result = await call(route, `/api/dsh-workbench/docs?dir=${encodeURIComponent(pairRoot)}`)
+check('三层同名文件归到同一个主干', result.body.pairs.length === 1, `实际 ${result.body.pairs.length} 组`)
+check('带两层尾巴的产物不算「无源产物」', result.body.counts.orphan === 0, JSON.stringify(result.body.counts))
+check('源与产物都识别到了', result.body.pairs[0]?.source !== null && result.body.pairs[0]?.artifact !== null)
+await rm(pairRoot, { recursive: true, force: true })
+
 /* ==================== 边界 ==================== */
 
 result = await call(route, '/api/dsh-workbench/docs')
