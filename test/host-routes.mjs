@@ -102,8 +102,8 @@ const ctx = {
 		if (key === 'workspaceRegistry')
 			return {
 				list: () => [
-					{ id: 'w1', path: 'D:\\dsh-tui-lyd', title: 'dsh-tui-lyd' },
-					{ id: 'w2', path: 'D:\\obsidian-vault', title: 'obsidian-vault' }
+					{ id: 'w1', path: 'D:\\work\\my-project', title: 'my-project' },
+					{ id: 'w2', path: 'D:\\work\\notes', title: 'notes' }
 				]
 			}
 		return undefined

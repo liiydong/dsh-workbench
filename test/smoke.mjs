@@ -239,7 +239,7 @@ const SKILLS = [
 ]
 
 const DOCS = {
-	dir: 'D:\\obsidian-vault\\毕业设计\\化学法版',
+	dir: 'D:\\work\\thesis',
 	exists: true,
 	truncated: false,
 	entries: [{ name: '03_第三章.md', stem: '03_第三章', ext: '.md', kind: 'source', bytes: 2048, bytesText: '2.0 KB', mtime: 1789000000000 }],
@@ -322,7 +322,7 @@ function historyBody() {
 	for (const round of ROUND_DEFS) {
 		const state = decisions.get(round.id) ?? 'pending'
 		const bucket = lines.get(round.line) ?? { name: round.line, rounds: [], counts: { pending: 0, approved: 0, rejected: 0 }, artifacts: [], kinds: [] }
-		bucket.rounds.push({ ...round, approval: { state, at: 0, by: state === 'pending' ? '' : 'liyadong', note: '' } })
+		bucket.rounds.push({ ...round, approval: { state, at: 0, by: state === 'pending' ? '' : 'tester', note: '' } })
 		bucket.counts[state] += 1
 		if (!bucket.artifacts.includes(round.artifact)) bucket.artifacts.push(round.artifact)
 		if (!bucket.kinds.includes(round.kind)) bucket.kinds.push(round.kind)
@@ -349,7 +349,7 @@ async function fakeFetch(url, options) {
 	else if (url.includes('/history?')) body = historyBody()
 	else if (url.includes('/skills')) body = { complete: true, cwd: '', skills: SKILLS }
 	else if (url.includes('/skill?')) body = { name: 'doc-iteration-control', content: '# 文档迭代控制\n\nMarkdown 是唯一的源。', path: 'C:\\Users\\me\\.agents\\skills\\doc-iteration-control\\SKILL.md' }
-	else if (url.includes('/workspaces')) body = { workspaces: [{ id: 'w1', path: 'D:\\dsh-tui-lyd', title: 'dsh-tui-lyd' }] }
+	else if (url.includes('/workspaces')) body = { workspaces: [{ id: 'w1', path: 'D:\\work\\my-project', title: 'my-project' }] }
 	else if (url.includes('/docs?')) body = DOCS
 	else body = { error: `未桩住的 URL：${url}` }
 	return {
@@ -542,14 +542,14 @@ docsTab.props.onClick()
 tree = await settle(createElement(Panel, {}))
 check('切到文档页', allText(tree).includes('源与产物的配对状态'))
 check('拉取了工作区列表', requests.some((url) => url.includes('/workspaces')))
-check('列出已登记工作区', allText(tree).includes('dsh-tui-lyd'))
+check('列出已登记工作区', allText(tree).includes('my-project'))
 
-const workspaceChip = findAll(tree, (node) => node.host === 'span' && allText(node).includes('dsh-tui-lyd') && typeof node.props.onClick === 'function')[0]
+const workspaceChip = findAll(tree, (node) => node.host === 'span' && allText(node).includes('my-project') && typeof node.props.onClick === 'function')[0]
 check('工作区徽章可点击', workspaceChip !== undefined)
 workspaceChip.props.onClick()
 tree = await settle(createElement(Panel, {}))
 
-check('扫描请求带上目录', requests.some((url) => url.includes('/docs?dir=') && url.includes('dsh-tui-lyd')))
+check('扫描请求带上目录', requests.some((url) => url.includes('/docs?dir=') && url.includes('my-project')))
 const text = allText(tree)
 check('统计徽章出现', text.includes('过期 1') && text.includes('无源产物 1') && text.includes('已同步 1'))
 check('过期配对显示为「产物过期」', text.includes('产物过期'))
