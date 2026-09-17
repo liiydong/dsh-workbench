@@ -1,0 +1,11 @@
+# dsh-workbench bundle patch
+#
+# 官方 CLI 安装后，`dsh plugin --profile web add link:D:/dsh-plugins/dsh-workbench`
+# 会读取本文件，把宿主半侧那一行插进 profile 的插件名册；客户端半侧由
+# package.json 的 dsh.client.platform 声明，由 client-modules 扫描后注入浏览器。
+#
+# 宿主半侧只有一个职责：把 ctx.skills 的技能目录与目录扫描结果，
+# 用 /api/dsh-workbench/* 三个只读 JSON 路由交给面板。
+- insert:
+    - id: workbench
+      name: 'dsh-workbench'
