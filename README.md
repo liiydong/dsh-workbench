@@ -188,6 +188,17 @@ node examples/make-demo.mjs        # 重新生成演示数据
 - 目录扫描不递归，只扫一层；一次最多返回 1000 轮。
 - 审批写的是记录文件，**不会**真的去改动或回滚你的 Word。
 
+## 关于这个仓库：作者与 AI 披露
+
+- 本仓库的代码由 **DeepSeek Harness 中的 AI Agent 生成**，由仓库所有者审阅、验证并发布；
+  每次提交的验证方式记录在 `CHANGELOG.md`（不需要浏览器的两套自检，共 115 项）。
+- **演示数据全是编的**（`examples/thesis-workbench/`，3 条产线 27 轮），不含任何真实文档或个人信息；
+  仓库里不含本机路径、姓名或邮箱，提交作者统一使用 GitHub 的 noreply 邮箱。
+- 以 **MIT** 发布（见 `LICENSE`）。
+- 第三方接口说明：与 `dsh-better-sidebar` 的集成只使用它公开的客户端服务契约
+  （`ctx.betterSidebar.registerTab`），未复制其代码；该契约按其文档是版本化的（`SIDEBAR_FEATURES`），
+  所以本插件把它当作**可选**依赖处理。
+
 ## License
 
 MIT
