@@ -577,6 +577,8 @@ check('写路径做了越界检查', hostSource.includes('目标路径越界'))
 const host = await import(`file://${HOST.replace(/\\/g, '/')}`)
 check('宿主半侧可被 Node 直接加载', typeof host.apply === 'function')
 check('主干名解析正确', host.__internals.stemOf('03_第三章.docx') === '03_第三章')
+check('主干名会剥掉导出的两层尾巴', host.__internals.stemOf('报告.docx.pdf') === '报告', host.__internals.stemOf('报告.docx.pdf'))
+check('主干名不会误吃正常文件名里的点', host.__internals.stemOf('2026.09.11-周报.docx') === '2026.09.11-周报', host.__internals.stemOf('2026.09.11-周报.docx'))
 check('体积格式正确', host.__internals.humanBytes(2048) === '2.0 KB')
 
 /* ==================== 汇总 ==================== */
