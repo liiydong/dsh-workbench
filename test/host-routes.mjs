@@ -12,6 +12,8 @@
  */
 
 import { Readable } from 'node:stream'
+import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -32,11 +34,13 @@ function check(label, condition, detail) {
 	}
 }
 
-/** 造一个假请求。 */
-function request(url, method = 'GET') {
+/** 造一个假请求（POST 可带 JSON 体）。 */
+function request(url, method = 'GET', body) {
 	const req = new Readable({ read() {} })
 	req.url = url
 	req.method = method
+	if (body !== undefined) req.push(JSON.stringify(body))
+	req.push(null)
 	return req
 }
 
@@ -57,16 +61,16 @@ function response() {
 	}
 }
 
-async function call(route, url, method = 'GET') {
+async function call(route, url, method = 'GET', body) {
 	const { res, captured } = response()
-	await route.handler(request(url, method), res)
-	let body = null
+	await route.handler(request(url, method, body), res)
+	let parsed = null
 	try {
-		body = JSON.parse(captured.text)
+		parsed = JSON.parse(captured.text)
 	} catch {
-		body = { parseError: captured.text.slice(0, 120) }
+		parsed = { parseError: captured.text.slice(0, 120) }
 	}
-	return { status: captured.status, body, headers: captured.headers }
+	return { status: captured.status, body: parsed, headers: captured.headers }
 }
 
 /* ==================== 桩上下文 ==================== */
@@ -166,6 +170,60 @@ if (result.body.exists === false) {
 	check('「已同步」确实满足 产物 mtime >= 源 mtime', okPairs.every((p) => p.artifact.mtime >= p.source.mtime))
 	check('孤儿项真的没有源', result.body.pairs.filter((p) => p.state === 'orphan').every((p) => p.source === null && p.artifact !== null))
 }
+
+/* ==================== /demo 与 /history（真扫演示项目） ==================== */
+
+result = await call(route, '/api/dsh-workbench/demo')
+check('/demo 指向插件自带的演示项目', result.status === 200 && result.body.exists === true, result.body.dir)
+const demoDir = result.body.dir
+
+result = await call(route, `/api/dsh-workbench/history?dir=${encodeURIComponent(demoDir)}`)
+const hist = result.body
+check('/history 读到三条产线', hist.exists === true && hist.lines.length === 3, `实际 ${hist.lines?.length}`)
+check('/history 总轮数为 27', hist.totals.rounds === 27, String(hist.totals.rounds))
+check('/history 状态计数自洽', hist.totals.pending + hist.totals.approved + hist.totals.rejected === hist.totals.rounds)
+check('/history 每轮都带摘要与来源', hist.lines.every((line) => line.rounds.every((r) => r.summary !== '' && Array.isArray(r.sources))))
+check('/history 每轮都有快照路径', hist.lines.every((line) => line.rounds.every((r) => r.snapshot.startsWith('.versions/'))))
+check('/history 按时间倒序', hist.lines.every((line) => line.rounds.every((r, i, arr) => i === 0 || arr[i - 1].at >= r.at)))
+check('/history 按天归类', hist.lines.every((line) => line.rounds.every((r) => /^\d{4}-\d{2}-\d{2}$/.test(r.day))))
+check('/history 识别多种产物类型', new Set(hist.lines.flatMap((l) => l.kinds)).size >= 2)
+check('/history 审批默认待审', hist.totals.pending > 0)
+check('/history 已有历史审批', hist.totals.approved > 0)
+
+/* ==================== /decide（在临时目录里真写一次） ==================== */
+
+const tempRoot = await mkdtemp(join(tmpdir(), 'dsh-workbench-test-'))
+const tempLine = join(tempRoot, '产线A')
+await mkdir(join(tempLine, '.versions'), { recursive: true })
+await writeFile(
+	join(tempLine, '.versions', 'produced.jsonl'),
+	`${JSON.stringify({ id: 'r1', at: 1789000000000, line: '产线A', artifact: '报告.docx', snapshot: '.versions/a.docx', kind: 'docx', bytes: 100, summary: '第一版', sources: [{ path: 'a.md' }] })}\n`,
+	'utf8'
+)
+await writeFile(join(tempLine, '.versions', 'decisions.jsonl'), '', 'utf8')
+
+result = await call(route, `/api/dsh-workbench/history?dir=${encodeURIComponent(tempRoot)}`)
+check('临时项目里那一轮是待审', result.body.totals.pending === 1 && result.body.totals.approved === 0)
+
+result = await call(route, '/api/dsh-workbench/decide', 'POST', { dir: tempRoot, line: '产线A', id: 'r1', state: 'approved', note: '可以', by: 'tester' })
+check('/decide 写入成功', result.status === 200 && result.body.ok === true, JSON.stringify(result.body))
+
+result = await call(route, `/api/dsh-workbench/history?dir=${encodeURIComponent(tempRoot)}`)
+check('/decide 之后历史里变成已通过', result.body.totals.approved === 1 && result.body.lines[0].rounds[0].approval.note === '可以')
+
+const decisionsText = await readFile(join(tempLine, '.versions', 'decisions.jsonl'), 'utf8')
+check('审批是追加式记录（一行一事件）', decisionsText.trim().split('\n').length === 1 && decisionsText.includes('"state":"approved"'))
+
+result = await call(route, '/api/dsh-workbench/decide', 'POST', { dir: tempRoot, line: '..\\..\\evil', id: 'r1', state: 'approved' })
+check('/decide 拒绝路径穿越', result.status === 400, String(result.status))
+
+result = await call(route, '/api/dsh-workbench/decide', 'POST', { dir: tempRoot, line: '产线A', id: 'r1', state: '随便' })
+check('/decide 拒绝非法状态', result.status === 400, String(result.status))
+
+result = await call(route, '/api/dsh-workbench/decide', 'GET')
+check('/decide 只接受 POST', result.status === 405, String(result.status))
+
+await rm(tempRoot, { recursive: true, force: true })
 
 /* ==================== 边界 ==================== */
 
