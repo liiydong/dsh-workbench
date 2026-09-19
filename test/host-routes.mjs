@@ -8,7 +8,7 @@
  *   - /docs        走**真实文件系统**扫描（默认扫本仓库根目录，也可用参数指定）
  *   - 未知路由 404、非 GET 405、技能注册表缺席时不抛异常
  *
- * 跑法：node D:\dsh-plugins\dsh-workbench\test\host-routes.mjs [目录]
+ * 跑法：node test\host-routes.mjs [目录]
  */
 
 import { Readable } from 'node:stream'
