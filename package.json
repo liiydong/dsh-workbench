@@ -1,6 +1,6 @@
 {
   "name": "dsh-workbench",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "DSH 工作台：把「AI 改 md → 生成 Word/PDF → 你审这一版」变成一条看得见的时间轴（版本快照、审批、打开某一版、把漏记的产物收编成记录），可停在右栏与对话并排；另有技能库（读 ctx.skills 的完整技能目录）、文档配对看板与「待我审」角标。",
