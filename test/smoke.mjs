@@ -230,6 +230,21 @@ const clickable = (tree, label) =>
 const inputByPlaceholder = (tree, fragment) =>
 	findAll(tree, (node) => node.host === 'input' && String(node.props.placeholder ?? '').includes(fragment))[0]
 
+/** 角标就是图标盒子上那个数字（没有待审时它整个不渲染）。 */
+const badgeOf = (node) => findAll(node, (child) => typeof child.props?.['data-workbench-badge'] === 'string')[0]
+
+/** 图标渲染时排掉的定时器数（后面数「自动检测」的定时器时要减掉它）。 */
+let iconTimers = 0
+
+/**
+ * 左栏那枚面板图标是个座位组件，得在渲染树里跑（它自己带 hook）。
+ * 这个壳子把当前注册的图标拿出来渲染——panelEntry 在注册那一段之后才赋值，
+ * 这里只声明、不执行，所以顺序没问题。
+ */
+function IconHarness() {
+	return createElement(panelEntry.component, { size: 18, active: false })
+}
+
 /* ==================== 桩数据 ==================== */
 
 const SKILLS = [
@@ -531,17 +546,37 @@ check('inject 声明了 slots', client.inject.includes('slots'))
 
 const registrations = []
 const tabRegistrations = []
-/** 桩 better-sidebar 的客户端服务：只实现 registerTab。 */
+/** 桩 better-sidebar 的客户端服务：registerTab + 它声明自己有 badge 能力。 */
 const fakeBetterSidebar = {
+	version: '0.19.1',
+	features: ['badge', 'tabLifecycle', 'updateTab'],
 	registerTab(descriptor) {
 		tabRegistrations.push(descriptor)
 		return () => {}
 	}
 }
+/** 桩官方右栏服务（ctx.sidebarRight）：tabs.register + openTab。 */
+const rightTabTypes = []
+const rightOpens = []
+const fakeSidebarRight = {
+	tabs: {
+		register(definition) {
+			rightTabTypes.push(definition)
+			return () => {}
+		}
+	},
+	openTab(kind) {
+		rightOpens.push(kind)
+		if (rightTabTypes.length === 0) throw new Error('sidebarRight: no tab type is registered as ' + kind)
+	}
+}
 const fakeCtx = {
 	slots: {
+		// 真运行时既接受普通函数，也接受生成器（后者可以 yield 多个注册）；
+		// 右栏座位就是这么用的，桩必须跟着一样跑，否则生成器体根本不会执行。
 		inject(name, factory) {
-			factory()
+			const produced = factory()
+			if (produced !== undefined && typeof produced.next === 'function') for (const step of produced) void step
 			return () => {}
 		},
 		register(definition, component) {
@@ -553,6 +588,7 @@ const fakeCtx = {
 		if (name === 'betterSidebar') return fakeBetterSidebar
 		if (name === 'uiWorkspace') return fakeUiWorkspace
 		if (name === 'layout') return fakeLayout
+		if (name === 'sidebarRight') return fakeSidebarRight
 		return undefined
 	},
 	effect(factory) {
@@ -577,6 +613,65 @@ check('页签带一行说明（+ 菜单里会显示）', typeof tabRegistrations
 check('页签声明单实例（不重复开）', tabRegistrations[0]?.single === true)
 check('页签图标能渲染出 svg', typeof tabRegistrations[0]?.icon === 'function' && expand(createElement(tabRegistrations[0].icon, { size: 16 }), 'tabicon').host === 'svg')
 check('页签组件就是工作台面板', tabRegistrations[0]?.component === client.__internals.WorkbenchPanel)
+check('better-sidebar 声明了 badge 能力时报上「待我审」', typeof tabRegistrations[0]?.badge === 'function')
+client.__internals.__debugReportPending(7, DEMO_DIR)
+check('页签角标跟着面板的数走', tabRegistrations[0]?.badge() === 7, String(tabRegistrations[0]?.badge?.()))
+client.__internals.__debugReportPending(0, '')
+check('没有待审时页签角标返回 null（不画 0）', tabRegistrations[0]?.badge() === null, String(tabRegistrations[0]?.badge?.()))
+
+/* ==================== 第三个落点：官方右栏页签 ==================== */
+
+const rightSeat = registrations.find((r) => r.definition.name === 'sidebar.right.pane.tab')
+check('注册了右栏页签类型', rightTabTypes.length === 1, `实际 ${rightTabTypes.length}`)
+check('右栏类型的 kind 与座位一致', rightTabTypes[0]?.kind === client.__internals.RIGHT_TAB_KIND && rightSeat?.definition.id === 'dsh-workbench', `${rightTabTypes[0]?.kind} / ${rightSeat?.definition.id}`)
+check('右栏类型声明为外部扩展（不抢别人的 kind）', rightTabTypes[0]?.priority === 'extension')
+check('右栏页签标题是中文「工作台」', rightTabTypes[0]?.title?.() === '工作台')
+check('右栏类型带引导卡片（右栏「+」里能找到它）', Array.isArray(rightTabTypes[0]?.guide) && rightTabTypes[0].guide[0]?.title() === '工作台')
+check('右栏引导卡片的图标能渲染出 svg', expand(createElement(rightTabTypes[0].guide[0].icon, { size: 16 }), 'guideicon').host === 'svg')
+
+// 正文是同一个面板（只是标记了「已经在右栏」，好把那枚按钮收起来）
+const rightBodyTree = await settle(createElement(rightSeat.component, {}))
+check('右栏正文渲染的就是工作台', allText(rightBodyTree).includes('工作台') && allText(rightBodyTree).includes('迭代'))
+check('已经在右栏时不再显示「搬到右栏」', clickable(rightBodyTree, '搬到右栏') === undefined)
+
+// 主区域那份要有这枚按钮，点了会请宿主把工作台开在右栏
+const mainTree = await settle(createElement(mainEntry.component, {}))
+const dockButton = clickable(mainTree, '搬到右栏')
+check('主区域面板上有「搬到右栏」', dockButton !== undefined)
+check('按钮悬停说明写清了它做什么', String(dockButton?.props?.title).includes('一边看对话'))
+if (dockButton !== undefined) dockButton.props.onClick()
+check('点击后请宿主把工作台开在右栏', rightOpens.length === 1 && rightOpens[0] === client.__internals.RIGHT_TAB_KIND, JSON.stringify(rightOpens))
+check('搬过去之后按钮仍在（面板状态不变，对话不再被挤走）', clickable(mainTree, '搬到右栏') !== undefined)
+
+// 宿主没有右栏服务时：不注册、不报错、也不放这个按钮
+const noRightRegistrations = []
+const noRightCtx = {
+	slots: {
+		inject(name, factory) {
+			factory()
+			return () => {}
+		},
+		register(definition, component) {
+			noRightRegistrations.push({ definition, component })
+			return () => {}
+		}
+	},
+	get() {
+		return undefined
+	},
+	effect(factory) {
+		factory()
+		return () => {}
+	}
+}
+client.apply(noRightCtx)
+check('没有右栏服务时不注册右栏座位', noRightRegistrations.every((r) => r.definition.name !== 'sidebar.right.pane.tab'))
+check('没有右栏服务时官方两处座位照常', noRightRegistrations.some((r) => r.definition.name === 'sidebar.panellist') && noRightRegistrations.some((r) => r.definition.name === 'main'))
+check('没有右栏服务时 registerRightColumn 如实回报', client.__internals.registerRightColumn(noRightCtx) === 'no-service')
+check('没有右栏服务时 openInRightColumn 如实返回 false', client.__internals.openInRightColumn() === false)
+
+// 换回带全部服务的上下文（rootContext 是模块级的，后 apply 的覆盖先前那份）
+client.apply(fakeCtx)
 
 // 没装 better-sidebar 时：不报错、官方两处座位照常
 const bareRegistrations = []
@@ -626,9 +721,12 @@ check('没有布局服务时 backToConversation 如实返回 false', client.__in
 // 换回带服务的那份上下文：rootContext 是模块级的，后 apply 的覆盖先前那份。
 client.apply(fakeCtx)
 
-const iconTree = expand(createElement(panelEntry.component, { size: 18, active: true }), 'icon')
-check('图标渲染出 svg', iconTree.host === 'svg', String(iconTree.host))
-check('图标有中文 aria-label', iconTree.props['aria-label'] === '工作台')
+const iconTree = await settle(createElement(IconHarness, {}))
+check('图标渲染出 svg', findAll(iconTree, (node) => node.host === 'svg').length > 0)
+check('图标有中文 aria-label', findAll(iconTree, (node) => node.host === 'svg')[0]?.props?.['aria-label'] === '工作台')
+// 这一下渲染会把角标的轮询排上（图标自己带的 effect），下面「自动检测」那一段数定时器时先减掉它
+iconTimers = timers.size
+check('图标自己也排了一个「待我审」的轮询', iconTimers >= 1, `实际 ${iconTimers}`)
 
 /* ==================== 迭代页（默认打开） ==================== */
 
@@ -767,8 +865,10 @@ check('该轮变成「已通过」', allText(tree).includes('已通过'))
 
 /* ==================== 目录里多了内容：自动检测 + 手动刷新 ==================== */
 
+// 角标的轮询跟着图标一起排上（上面已渲染过图标），所以这里一共两个定时器：
+// 一个是「待我审」角标，一个是本页的「目录有没有新东西」。
 check('目录行有自动档位按钮（默认 10 秒）', clickable(tree, '自动：10 秒') !== undefined)
-check('自动检测已排上定时器', timers.size === 1, `实际 ${timers.size}`)
+check('自动检测已排上定时器（角标那个 + 这一个）', timers.size === iconTimers + 1, `实际 ${timers.size}`)
 
 // 服务端多了一条记录 → 探一拍只该给提示，不该自己跳屏
 extraRounds.push({
@@ -837,7 +937,7 @@ tree = await settle(createElement(Panel, {}))
 clickable(tree, '自动：1 分钟').props.onClick()
 tree = await settle(createElement(Panel, {}))
 check('一直点可以关掉自动', clickable(tree, '自动：关') !== undefined)
-check('关掉之后不再排定时器', timers.size === 0, `实际 ${timers.size}`)
+check('关掉之后本页不再排定时器（只剩角标那个）', timers.size === iconTimers, `实际 ${timers.size}`)
 
 /* ==================== 还没进记录的产物（/scan + /adopt） ==================== */
 
@@ -886,8 +986,40 @@ tree = await settle(createElement(Panel, {}))
 check('能收起这一块', !allText(tree).includes('还没进记录的产物'))
 check('收起后不会再扫', scanCalls().length === 2, `实际 ${scanCalls().length}`)
 
-/* ==================== 技能库页 ==================== */
+/* ==================== 左栏图标上的「待我审」角标 ==================== */
 
+/**
+ * 面板与图标在同一棵树里渲染：它们是模块级单例，分开渲染会互相打断 effect，
+ * 而且角标本来就是「面板报数 → 图标画数字」这条线，同屏才验得到。
+ */
+function PanelAndIcon() {
+	return createElement('div', null, createElement(WorkbenchPanelStub, {}), createElement(IconHarness, {}))
+}
+/** 面板本体（就是主座位注册的那个组件）。 */
+const WorkbenchPanelStub = mainEntry.component
+
+// 角标上该是几：把桩数据按同一口径数一遍（自动检测那一段往 extraRounds 里加过两条）
+const pendingNow = [...ROUND_DEFS, ...extraRounds].filter((round) => (decisions.get(round.id) ?? 'pending') === 'pending').length
+const bothTree = await settle(createElement(PanelAndIcon, {}))
+check('面板与图标同屏：角标出现', badgeOf(bothTree) !== undefined)
+check('角标上的数字就是面板算出的待审轮数', badgeOf(bothTree)?.props?.['data-workbench-badge'] === String(pendingNow), `角标 ${badgeOf(bothTree)?.props?.['data-workbench-badge']} ｜ 实际 ${pendingNow}`)
+check('角标悬停说明写清是哪个目录', String(badgeOf(bothTree)?.props?.title).includes('待你审') && String(badgeOf(bothTree)?.props?.title).includes('thesis-workbench'), String(badgeOf(bothTree)?.props?.title))
+
+// 数字太大时收成 99+，不然角标会撑到图标外面去
+client.__internals.__debugReportPending(137, DEMO_DIR)
+const manyTree = await settle(createElement(IconHarness, {}))
+check('数字超过 99 收成 99+', badgeOf(manyTree)?.props?.['data-workbench-badge'] === '137' && allText(manyTree).includes('99+'), allText(manyTree))
+
+client.__internals.__debugReportPending(0, '')
+const clearTree = await settle(createElement(IconHarness, {}))
+check('没有待审时角标整个不渲染（不会画一个 0）', badgeOf(clearTree) === undefined, `实际 ${badgeOf(clearTree)?.props?.['data-workbench-badge']}`)
+
+// 收尾：把页签切回迭代页（面板状态是模块级单例，不切回去后面几段会踩空）
+tree = await settle(createElement(WorkbenchPanelStub, {}))
+clickable(tree, '迭代').props.onClick()
+tree = await settle(createElement(WorkbenchPanelStub, {}))
+
+/* ==================== 技能库页 ==================== */
 const skillsTab = clickable(tree, '技能库')
 check('找到「技能库」页签', skillsTab !== undefined)
 skillsTab.props.onClick()
