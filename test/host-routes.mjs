@@ -6,6 +6,10 @@
  *   - /skill       走 ctx.skills.get（桩）→ 全文
  *   - /workspaces  走 ctx.workspaceRegistry.list（桩）
  *   - /docs        走**真实文件系统**扫描（默认扫本仓库根目录，也可用参数指定）
+ *   - /decide      在系统临时目录里**真写**一次审批记录
+ *   - /reveal      启动器被换成收集器（测试里绝不弹资源管理器窗口）
+ *   - /scan        真扫临时目录 + 桩会话服务（含「soffice 的读入方不算生成」「删除不算生成」等反例）
+ *   - /adopt       在临时目录里**真写**一份快照 + 追加一行 produced.jsonl
  *   - 未知路由 404、非 GET 405、技能注册表缺席时不抛异常
  *
  * 跑法：node test\host-routes.mjs [目录]
@@ -223,7 +227,164 @@ check('/decide 拒绝非法状态', result.status === 400, String(result.status)
 result = await call(route, '/api/dsh-workbench/decide', 'GET')
 check('/decide 只接受 POST', result.status === 405, String(result.status))
 
+/* ==================== /reveal（打开文件 / 在文件夹里定位） ==================== */
+
+// 把「真的启动外部程序」那一步换掉——测试里绝不能弹出资源管理器窗口
+const launches = []
+host.__internals.setLauncher((command, args) => {
+	launches.push({ command, args })
+})
+
+await writeFile(join(tempLine, '论文全文.docx'), 'docx', 'utf8')
+await writeFile(join(tempLine, '.versions', '20260911T2210-论文全文.docx'), 'snapshot', 'utf8')
+await writeFile(join(tempLine, 'evil.exe'), 'MZ', 'utf8')
+await mkdir(join(tempLine, '子目录'), { recursive: true })
+
+result = await call(route, '/api/dsh-workbench/reveal', 'POST', { dir: tempRoot, line: '产线A', file: '论文全文.docx', mode: 'open' })
+check('/reveal 打开文件返回 200', result.status === 200 && result.body.ok === true, JSON.stringify(result.body))
+check('/reveal 真的调了启动器', launches.length === 1, `实际 ${launches.length}`)
+check('/reveal 传的是绝对路径', launches[0]?.args?.some((a) => a.endsWith('论文全文.docx')) === true, JSON.stringify(launches[0]))
+check('/reveal 路径落在项目目录内', launches[0]?.args?.some((a) => a.startsWith(tempRoot)) === true)
+
+result = await call(route, '/api/dsh-workbench/reveal', 'POST', { dir: tempRoot, line: '产线A', file: '.versions/20260911T2210-论文全文.docx', mode: 'reveal' })
+check('/reveal 能定位 .versions 里的快照', result.status === 200, JSON.stringify(result.body))
+check('reveal 模式带「定位并选中」参数', String(launches[1]?.args?.[0] ?? '').startsWith('/select,'), JSON.stringify(launches[1]))
+
+result = await call(route, '/api/dsh-workbench/reveal', 'POST', { dir: tempRoot, line: '产线A', file: 'evil.exe', mode: 'open' })
+check('/reveal 拒绝白名单外的类型（否则等于任意程序执行）', result.status === 400 && launches.length === 2, `状态 ${result.status}｜launches ${launches.length}`)
+
+result = await call(route, '/api/dsh-workbench/reveal', 'POST', { dir: tempRoot, line: '产线A', file: '..\\..\\外面的.docx', mode: 'open' })
+check('/reveal 拒绝路径穿越', result.status === 400 && launches.length === 2, `状态 ${result.status}`)
+
+result = await call(route, '/api/dsh-workbench/reveal', 'POST', { dir: tempRoot, line: '..', file: 'x.docx', mode: 'open' })
+check('/reveal 拒绝非法的产线名', result.status === 400, String(result.status))
+
+result = await call(route, '/api/dsh-workbench/reveal', 'POST', { dir: tempRoot, line: '产线A', file: '没有这个.docx', mode: 'open' })
+check('/reveal 文件不在原处时 404', result.status === 404, String(result.status))
+
+result = await call(route, '/api/dsh-workbench/reveal', 'POST', { dir: tempRoot, line: '产线A', file: '子目录', mode: 'open' })
+check('/reveal 目标是目录时 400', result.status === 400, String(result.status))
+
+result = await call(route, '/api/dsh-workbench/reveal', 'POST', { file: 'x.docx' })
+check('/reveal 缺 dir 时 400', result.status === 400, String(result.status))
+
+result = await call(route, '/api/dsh-workbench/reveal', 'GET')
+check('/reveal 只接受 POST', result.status === 405, String(result.status))
+check('被拒的请求一次都没启动过程序', launches.length === 2, `实际 ${launches.length}`)
+
+/* ==================== /scan：找「还没进记录」的产物 ==================== */
+
+// 会话查询服务（桩）：一次真实扫描要不要去翻会话日志，全看这个服务在不在。
+// 这里故意混进一个「别的项目」的会话，验证按 cwd 过滤。
+const now = Date.now()
+const mdPath = join(tempLine, '03-第三章.md')
+const docxPath = join(tempLine, '论文全文.docx')
+ctx.get = ((original) => (key) => {
+	if (key !== 'sessionQuery') return original(key)
+	return {
+		async listSessions() {
+			return [
+				{ header: { id: 's-here', cwd: tempRoot, createdAt: now - 3600000 } },
+				{ header: { id: 's-elsewhere', cwd: join(tmpdir(), '别的项目'), createdAt: now - 3600000 } }
+			]
+		},
+		async readSession(id) {
+			// 会话服务是按 id 读的；别的项目的会话不该被读进来（cwd 过滤就该拦掉）。
+			if (id !== 's-here') return { events: [] }
+			return {
+				events: [
+					{ type: 'tool/call', time: now - 300000, data: { name: 'write', arguments: JSON.stringify({ file_path: mdPath, content: '# 第三章' }) } },
+					{ type: 'tool/call', time: now - 240000, data: { name: 'pwsh', arguments: JSON.stringify({ command: `python thesis_docx.py --out "${docxPath}"` }) } },
+					// 反例：这一条里 docx 是读入的一方，不能被当成生成命令
+					{ type: 'tool/call', time: now - 180000, data: { name: 'pwsh', arguments: JSON.stringify({ command: `soffice --convert-to pdf "${docxPath}" --outdir "${tempLine}"` }) } },
+					// 反例：删除命令
+					{ type: 'tool/call', time: now - 120000, data: { name: 'pwsh', arguments: JSON.stringify({ command: `Remove-Item "${docxPath}"` }) } }
+				].filter((event) => event.time < now - 60000)
+			}
+		}
+	}
+})(ctx.get)
+await writeFile(mdPath, '# 第三章\n', 'utf8')
+await writeFile(docxPath, 'docx-新版', 'utf8')
+await writeFile(join(tempLine, '论文全文.pdf'), 'pdf', 'utf8')
+
+result = await call(route, '/api/dsh-workbench/scan', 'POST', { dir: tempRoot })
+check('/scan 返回 200', result.status === 200, JSON.stringify(result.body).slice(0, 200))
+check('/scan 认出没进记录的产物', result.body.totals.products === 2, JSON.stringify(result.body.totals))
+check('/scan 找到了会话里的生成命令', result.body.lines[0].products.some((p) => p.tool.includes('thesis_docx.py')), JSON.stringify(result.body.lines[0].products.map((p) => p.tool)))
+check('/scan 不把 soffice 的读入当成生成', result.body.lines[0].products.every((p) => !p.tool.includes('soffice')), JSON.stringify(result.body.lines[0].products.map((p) => p.tool)))
+check('/scan 不把删除命令当成生成', result.body.lines[0].products.every((p) => !p.tool.includes('Remove-Item')))
+check('/scan 带上改动过的源', result.body.lines[0].products.find((p) => p.name === '论文全文.docx')?.sources.includes('03-第三章.md') === true)
+check('/scan 报告会话可查（provenance.available）', result.body.provenance.available === true)
+check('/scan 只翻本项目 cwd 的会话', result.body.provenance.sessions === 1, `实际 ${result.body.provenance.sessions}`)
+
+// 同一份文件被真记过一次之后，就不该再出现在「没进记录」里
+result = await call(route, '/api/dsh-workbench/adopt', 'POST', { dir: tempRoot, line: '产线A', file: '论文全文.docx', note: '第一次收编' })
+check('/adopt 返回 200', result.status === 200 && result.body.ok === true, JSON.stringify(result.body))
+check('/adopt 给出快照相对路径', String(result.body.snapshot).startsWith('.versions/') && String(result.body.snapshot).endsWith('论文全文.docx'), String(result.body.snapshot))
+const adoptedText = await readFile(join(tempLine, '.versions', 'produced.jsonl'), 'utf8')
+check('/adopt 往 produced.jsonl 追加了一行', adoptedText.trim().split('\n').length === 2)
+check('/adopt 记录里带 note 与 adopted 标记', adoptedText.includes('"note":"第一次收编"') && adoptedText.includes('"adopted":true'))
+const snapshotFile = join(tempLine, String(result.body.snapshot).replace('.versions/', '.versions\\'))
+check('/adopt 真的写了快照文件', (await readFile(snapshotFile, 'utf8')) === 'docx-新版')
+
+result = await call(route, '/api/dsh-workbench/scan', 'POST', { dir: tempRoot })
+check('/adopt 之后它不再出现在「没进记录」里', result.body.lines[0].products.every((p) => p.name !== '论文全文.docx'), JSON.stringify(result.body.lines[0].products.map((p) => p.name)))
+check('没记过的那份还在列表里', result.body.lines[0].products.some((p) => p.name === '论文全文.pdf'))
+
+result = await call(route, '/api/dsh-workbench/adopt', 'POST', { dir: tempRoot, line: '产线A', file: '论文全文.docx' })
+check('/adopt 同一分钟重复收编时报 409（不覆盖快照）', result.status === 409, String(result.status))
+
+result = await call(route, '/api/dsh-workbench/adopt', 'POST', { dir: tempRoot, line: '产线A', file: 'evil.exe' })
+check('/adopt 拒绝白名单外的类型', result.status === 400, String(result.status))
+
+result = await call(route, '/api/dsh-workbench/adopt', 'POST', { dir: tempRoot, line: '产线A', file: '..\\..\\外面的.docx' })
+check('/adopt 拒绝路径穿越', result.status === 400, String(result.status))
+
+result = await call(route, '/api/dsh-workbench/adopt', 'POST', { dir: tempRoot, line: '..', file: 'x.docx' })
+check('/adopt 拒绝非法的产线名', result.status === 400, String(result.status))
+
+result = await call(route, '/api/dsh-workbench/adopt', 'POST', { dir: tempRoot, line: '产线A', file: '没有这个.docx' })
+check('/adopt 文件不在原处时 404', result.status === 404, String(result.status))
+
+result = await call(route, '/api/dsh-workbench/adopt', 'GET')
+check('/adopt 只接受 POST', result.status === 405, String(result.status))
+
+result = await call(route, '/api/dsh-workbench/scan', 'GET')
+check('/scan 只接受 POST', result.status === 405, String(result.status))
+
+result = await call(route, '/api/dsh-workbench/scan', 'POST', {})
+check('/scan 缺 dir 时 400', result.status === 400, String(result.status))
+
+result = await call(route, '/api/dsh-workbench/scan', 'POST', { dir: join(tmpdir(), 'dsh-workbench-没有这个目录') })
+check('/scan 目录不存在时给可读原因而不是 500', result.status === 200 && result.body.exists === false && typeof result.body.error === 'string')
+
 await rm(tempRoot, { recursive: true, force: true })
+
+/* ==================== 归因判据的单元样例（不出错比多给更重要） ==================== */
+
+const { looksLikeOutput, recordOf, pathTokensOf } = host.__internals
+const docxTarget = 'C:\\proj\\毕业论文\\论文全文.docx'
+const verdict = (command) => looksLikeOutput(command, docxTarget)
+
+check('认得出 --out 的产物', verdict(`python build.py --out "${docxTarget}"`) === true)
+check('认得出 -o 的产物', verdict(`pandoc a.md -o "${docxTarget}"`) === true)
+check('认得出重定向的产物', verdict(`python build.py > "${docxTarget}"`) === true)
+check('认得出「构建脚本 + 目标文件名」', verdict(`node build.mjs "${docxTarget}"`) === true)
+check('不把 soffice 的读入方当产物', verdict(`soffice --convert-to pdf "${docxTarget}" --outdir "C:\\proj\\毕业论文"`) === false)
+check('不把只读命令当产物', verdict(`Get-Content "${docxTarget}"`) === false)
+check('别的项目里的同名文件不算', verdict('python build.py --out "C:\\other\\论文全文.docx"') === false)
+check('命令里没这个文件就不算', verdict(`python build.py --out "C:\\proj\\毕业论文\\别的.docx"`) === false)
+
+const nameOnly = pathTokensOf({ command: `python x.py --out "${docxTarget}"` })
+check('从命令里取出绝对路径', nameOnly.includes(docxTarget), JSON.stringify(nameOnly))
+check('不把 content 里的反斜杠片段当路径', pathTokensOf({ file_path: 'D:\\a\\b.md', content: 'x = "C:\\\\tmp\\\\y"' })[0] === 'D:\\a\\b.md')
+
+const base = 1700000000000
+check('记录时间早于文件 → 算「还没进记录」', recordOf([{ id: 'a', at: base - 60000, artifact: '论文全文.docx' }], '论文全文.docx', base) === undefined)
+check('记录时间晚于文件 → 算已进记录', recordOf([{ id: 'a', at: base + 10, artifact: '论文全文.docx' }], '论文全文.docx', base)?.id === 'a')
+check('产物名不同不算同一条', recordOf([{ id: 'a', at: base + 10, artifact: '别的.docx' }], '论文全文.docx', base) === undefined)
+check('3 秒内的时钟差算同一条', recordOf([{ id: 'a', at: base - 2000, artifact: '论文全文.docx' }], '论文全文.docx', base)?.id === 'a')
 
 /* ==================== /docs 的「导出两层尾巴」配对 ==================== */
 

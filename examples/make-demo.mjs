@@ -16,7 +16,7 @@
  * 跑法：node examples/make-demo.mjs
  */
 
-import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -156,6 +156,11 @@ for (const [lineIdx, line] of LINES.entries()) {
 		writeFileSync(join(versions, snapName), body, 'utf8')
 		// 工作副本：名字永远不变，每次覆盖 —— 「最终版_真的最终版」就是这么消失的
 		writeFileSync(join(dir, artifact.file), body, 'utf8')
+		// 把两份文件的时间也拨回「记录里那一刻」：否则它们全是「刚写出来的」，
+		// 「还没进记录」那一块会把整个演示项目都报成漏记的（真实产线也一样对不上）。
+		const seconds = cursor / 1000
+		utimesSync(join(versions, snapName), seconds, seconds)
+		utimesSync(join(dir, artifact.file), seconds, seconds)
 
 		produced.push({
 			id,

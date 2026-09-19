@@ -399,6 +399,53 @@ async function tickOnce() {
 /** 桩服务端的「后来又跑出来的记录」：测试中途往里塞，模拟产线目录里多了内容。 */
 const extraRounds = []
 
+/** 桩服务端的「还没进记录的产物」：/adopt 成功一条就从这里摘掉一条。 */
+const UNRECORDED = [
+	{
+		line: '毕业论文',
+		dir: '毕业论文',
+		name: '论文全文.docx',
+		kind: 'docx',
+		bytes: 38000,
+		bytesText: '37.1 KB',
+		mtime: 1789000000000,
+		tool: 'python thesis_docx.py --out 论文全文.docx',
+		sources: ['03-第三章-物料衡算.md']
+	},
+	{
+		line: '毕业论文',
+		dir: '毕业论文',
+		name: '会失败的.docx',
+		kind: 'docx',
+		bytes: 1000,
+		bytesText: '1000 B',
+		mtime: 1789000000000,
+		tool: '',
+		sources: []
+	}
+]
+
+/** 测试里收到的收编请求。 */
+const adopted = []
+
+/** /scan 的响应体（按当前 UNRECORDED 现算）。 */
+function scanBody() {
+	const byLine = new Map()
+	for (const entry of UNRECORDED) {
+		const bucket = byLine.get(entry.line) ?? []
+		bucket.push(entry)
+		byLine.set(entry.line, bucket)
+	}
+	return {
+		dir: DEMO_DIR,
+		exists: true,
+		windowHours: 48,
+		provenance: { available: true, sessions: 2, events: 9 },
+		totals: { products: UNRECORDED.length, lines: byLine.size },
+		lines: [...byLine.entries()].map(([name, products]) => ({ name, products }))
+	}
+}
+
 function historyBody() {
 	const lines = new Map()
 	for (const round of [...ROUND_DEFS, ...extraRounds]) {
@@ -417,14 +464,29 @@ function historyBody() {
 	return { dir: DEMO_DIR, exists: true, truncated: false, totals, lines: list }
 }
 
-async function fakeFetch(url, options) {
-	const method = options?.method ?? 'GET'
+async function fakeFetch(url, options) {	const method = options?.method ?? 'GET'
 	requests.push(method === 'POST' ? `POST ${url} ${options.body}` : url)
 	if (method === 'POST' && url.includes('/decide')) {
 		const payload = JSON.parse(options.body)
 		if (!['approved', 'rejected', 'pending'].includes(payload.state)) return { status: 400, async text() { return JSON.stringify({ error: 'bad state' }) } }
 		decisions.set(payload.id, payload.state)
 		return { status: 200, async text() { return JSON.stringify({ ok: true, id: payload.id, state: payload.state }) } }
+	}
+	if (method === 'POST' && url.includes('/reveal')) {
+		const payload = JSON.parse(options.body)
+		return { status: 200, async text() { return JSON.stringify({ ok: true, mode: payload.mode, path: `C:\\demo\\${payload.line}\\${payload.file}` }) } }
+	}
+	if (method === 'POST' && url.includes('/scan')) {
+		return { status: 200, async text() { return JSON.stringify(scanBody()) } }
+	}
+	if (method === 'POST' && url.includes('/adopt')) {
+		const payload = JSON.parse(options.body)
+		if (payload.file === '会失败的.docx') return { status: 409, async text() { return JSON.stringify({ error: '这一分钟已经收编过它' }) } }
+		adopted.push(payload)
+		const key = `${payload.line}/${payload.file}`
+		const index = UNRECORDED.findIndex((entry) => `${entry.line}/${entry.name}` === key)
+		if (index >= 0) UNRECORDED.splice(index, 1)
+		return { status: 200, async text() { return JSON.stringify({ ok: true, id: 'adopted-1', snapshot: `.versions/20260919T2100-${payload.file}`, bytes: 38000 }) } }
 	}
 	let body
 	if (url.includes('/demo')) body = { dir: DEMO_DIR, exists: true }
@@ -674,6 +736,29 @@ pickRow.props.onClick()
 tree = await settle(createElement(Panel, {}))
 const approve = clickable(tree, '通过')
 check('出现「通过」按钮', approve !== undefined)
+
+/* ==================== 打开这一版 / 打开成品 / 在文件夹里 ==================== */
+
+const revealCalls = () => requests.filter((r) => r.startsWith('POST') && r.includes('/reveal'))
+
+check('选中一轮后有「打开这一版」', clickable(tree, '打开这一版') !== undefined)
+check('也有「打开成品」和「在文件夹里」', clickable(tree, '打开成品') !== undefined && clickable(tree, '在文件夹里') !== undefined)
+
+clickable(tree, '打开这一版').props.onClick()
+tree = await settle(createElement(Panel, {}))
+check('「打开这一版」把快照路径交给宿主', revealCalls().some((r) => r.includes('.versions/20260911T2210-论文全文.docx')), revealCalls()[0])
+check('「打开这一版」是 open 模式', revealCalls().some((r) => r.includes('"mode":"open"')))
+
+clickable(tree, '打开成品').props.onClick()
+tree = await settle(createElement(Panel, {}))
+check('「打开成品」交的是工作副本文件名', revealCalls().some((r) => r.includes('"file":"论文全文.docx"')))
+
+clickable(tree, '在文件夹里').props.onClick()
+tree = await settle(createElement(Panel, {}))
+check('「在文件夹里」用 reveal 模式', revealCalls().some((r) => r.includes('"mode":"reveal"')))
+check('三次都带着产线名', revealCalls().every((r) => r.includes('"line":"毕业论文"')))
+check('打开动作不改动审批状态', !requests.some((r) => r.startsWith('POST') && r.includes('/decide') && r.includes('"state":"pending"')))
+
 approve.props.onClick()
 tree = await settle(createElement(Panel, {}))
 check('发出了审批写请求', requests.some((r) => r.startsWith('POST') && r.includes('/decide') && r.includes('"state":"approved"')))
@@ -753,6 +838,53 @@ clickable(tree, '自动：1 分钟').props.onClick()
 tree = await settle(createElement(Panel, {}))
 check('一直点可以关掉自动', clickable(tree, '自动：关') !== undefined)
 check('关掉之后不再排定时器', timers.size === 0, `实际 ${timers.size}`)
+
+/* ==================== 还没进记录的产物（/scan + /adopt） ==================== */
+
+const scanCalls = () => requests.filter((r) => r.startsWith('POST') && r.includes('/scan'))
+const adoptCalls = () => requests.filter((r) => r.startsWith('POST') && r.includes('/adopt'))
+
+check('默认不扫（不给时间轴添乱）', scanCalls().length === 0)
+const openAdopt = clickable(tree, '未入记录')
+check('顶栏有「未入记录」按钮', openAdopt !== undefined)
+openAdopt.props.onClick()
+tree = await settle(createElement(Panel, {}))
+check('展开后扫了一次', scanCalls().length === 1, `实际 ${scanCalls().length}`)
+check('列出没进记录的产物', allText(tree).includes('还没进记录的产物') && allText(tree).includes('论文全文.docx'))
+check('显示生成方式', allText(tree).includes('python thesis_docx.py --out 论文全文.docx'))
+check('显示改过的源', allText(tree).includes('03-第三章-物料衡算.md'))
+check('没找到生成命令时如实说', allText(tree).includes('没找到生成命令'))
+
+const noteInput = inputByPlaceholder(tree, '这一版改了什么')
+check('每一行都有「这一版改了什么」输入框', noteInput !== undefined)
+noteInput.props.onChange({ target: { value: '第3章：修正乙苯转化率' } })
+tree = await settle(createElement(Panel, {}))
+
+const recordButton = findAll(tree, (node) => node.host === 'button' && node.props.title !== undefined && allText(node).includes('记一版'))[0]
+check('能找到「记一版」按钮', recordButton !== undefined)
+check('按钮悬停说明写清了它会写什么', String(recordButton?.props.title).includes('produced.jsonl'))
+recordButton.props.onClick()
+tree = await settle(createElement(Panel, {}))
+check('发出了收编请求', adoptCalls().length === 1, `实际 ${adoptCalls().length}`)
+check('请求带着产线与文件名', adoptCalls()[0].includes('"line":"毕业论文"') && adoptCalls()[0].includes('"file":"论文全文.docx"'))
+check('请求带着那句备注', adoptCalls()[0].includes('第3章：修正乙苯转化率'))
+check('请求带着找到的生成命令与来源', adoptCalls()[0].includes('thesis_docx.py') && adoptCalls()[0].includes('03-第三章-物料衡算.md'))
+check('收编成功后提示快照路径', allText(tree).includes('已收编 1 个') && allText(tree).includes('.versions/20260919T2100-论文全文.docx'))
+check('收编后重新扫了一遍', scanCalls().length === 2, `实际 ${scanCalls().length}`)
+check('收编过的那条从清单里消失', !allText(tree).includes('生成方式：python thesis_docx.py'))
+check('时间轴也跟着刷新了', requests.filter((url) => url.includes('/history?dir=')).length >= 2)
+
+// 失败要如实说，不能默默装作成功
+const failing = findAll(tree, (node) => node.host === 'button' && allText(node).includes('记一版')).slice(-1)[0]
+failing.props.onClick()
+tree = await settle(createElement(Panel, {}))
+check('收编失败时把原因显示出来', allText(tree).includes('这一分钟已经收编过它'))
+check('失败时不清空清单', allText(tree).includes('会失败的.docx'))
+
+clickable(tree, '收起').props.onClick()
+tree = await settle(createElement(Panel, {}))
+check('能收起这一块', !allText(tree).includes('还没进记录的产物'))
+check('收起后不会再扫', scanCalls().length === 2, `实际 ${scanCalls().length}`)
 
 /* ==================== 技能库页 ==================== */
 
