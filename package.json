@@ -1,6 +1,6 @@
 {
   "name": "dsh-workbench",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "DSH 工作台：侧边栏一个面板，左半是技能库（读 ctx.skills 的完整技能目录，可搜索、可读全文），右半是文档迭代看板（md 源 / docx-pdf 产物的配对与「产物过期」判定）。",

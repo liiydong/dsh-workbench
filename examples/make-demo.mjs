@@ -178,7 +178,7 @@ for (const [lineIdx, line] of LINES.entries()) {
 				id,
 				at: cursor + 2 * HOUR,
 				state: decision[1],
-				by: 'reviewer',
+				by: 'human',
 				note: decision[2]
 			})
 		}
