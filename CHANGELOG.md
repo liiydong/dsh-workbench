@@ -2,7 +2,7 @@
 
 本文件记录 dsh-workbench 每个版本做了什么。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
-## [未发布]
+## [0.3.0] — 2026-09-19
 
 ### 一边看对话，一边看时间轴：工作台能停到右栏了
 
