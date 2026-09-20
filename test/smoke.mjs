@@ -284,6 +284,36 @@ const requests = []
 const decisions = new Map()
 const DEMO_DIR = 'C:\\demo\\thesis-workbench'
 
+/** 桩的「一版正文」：旧版。 */
+const TEXT_OLD = [
+	{ kind: 'h1', text: '第三章 物料衡算' },
+	{ kind: 'p', text: '乙苯转化率取 0.62，塔顶采出 1.2 t/h' },
+	{ kind: 'p', text: '未改动甲' },
+	{ kind: 'p', text: '未改动乙' },
+	{ kind: 'p', text: '未改动丙' },
+	{ kind: 'p', text: '未改动丁' },
+	{ kind: 'p', text: '设备选型按老方案' },
+	{ kind: 'h2', text: '本节小结' }
+]
+/** 桩的「一版正文」：新版——改了一个数、换了一段，中间四段一字未动。 */
+const TEXT_NEW = TEXT_OLD.map((block, index) =>
+	index === 1 ? { kind: 'p', text: '乙苯转化率取 0.58，塔顶采出 1.2 t/h' } : index === 6 ? { kind: 'p', text: '热量衡算表已重算' } : block
+)
+/** 桩的「一版正文」：和新版一字不差（脚本跑了但内容没变）。 */
+const TEXT_SAME = TEXT_NEW.map((block) => ({ ...block }))
+/** 桩的「读不出来的正文」（扩展名对、内容不是 zip）。 */
+const TEXT_BROKEN = { ok: false, error: '这个 docx 里找不到 word/document.xml' }
+const TEXT_DOCS = {
+	'.versions/20260910T1400-论文全文.docx': TEXT_OLD,
+	'.versions/20260911T2210-论文全文.docx': TEXT_NEW,
+	'.versions/20260912T1000-论文全文.docx': TEXT_OLD,
+	'.versions/20260912T1600-论文全文.docx': TEXT_OLD,
+	'.versions/20260913T1000-论文全文.docx': TEXT_SAME,
+	'.versions/打不开的.docx': TEXT_BROKEN
+}
+/** 桩的 md 源（磁盘上只有一份，所以两轮读到的永远一样——这正是「比 md 源」不做的原因）。 */
+const TEXT_SOURCES = { '03-第三章-物料衡算.md': [{ kind: 'h1', text: '第三章' }, { kind: 'p', text: '转化率 0.55' }] }
+
 /**
  * 桩 DSH 的目录选择服务（`ctx.get('uiWorkspace')`）：
  * `nextPicked` 是下一次 `pickDirectory()` 的结果——字符串=选中，null=用户取消，
@@ -474,6 +504,8 @@ function historyBody() {
 		lines.set(round.line, bucket)
 	}
 	const list = [...lines.values()]
+	// 真宿主是按时间新→旧排的，桩也得一样，否则「上一版」指不定是谁。
+	for (const line of list) line.rounds.sort((a, b) => b.at - a.at)
 	const totals = { rounds: ROUND_DEFS.length + extraRounds.length, pending: 0, approved: 0, rejected: 0, lines: list.length }
 	for (const line of list) for (const key of ['pending', 'approved', 'rejected']) totals[key] += line.counts[key]
 	return { dir: DEMO_DIR, exists: true, truncated: false, totals, lines: list }
@@ -481,6 +513,13 @@ function historyBody() {
 
 async function fakeFetch(url, options) {	const method = options?.method ?? 'GET'
 	requests.push(method === 'POST' ? `POST ${url} ${options.body}` : url)
+	if (url.includes('/text?')) {
+		const query = new URL(url, 'http://localhost').searchParams
+		const file = query.get('file') ?? ''
+		const blocks = TEXT_DOCS[file] ?? TEXT_SOURCES[file]
+		if (blocks === undefined) return { status: 404, async text() { return JSON.stringify({ error: '文件不在原处了' }) } }
+		return { status: 200, async text() { return JSON.stringify({ ok: blocks !== TEXT_BROKEN, file, kind: 'docx', blocks: blocks === TEXT_BROKEN ? [] : blocks, truncated: false, ...(blocks === TEXT_BROKEN ? { error: TEXT_BROKEN.error } : {}) }) } }
+	}
 	if (method === 'POST' && url.includes('/decide')) {
 		const payload = JSON.parse(options.body)
 		if (!['approved', 'rejected', 'pending'].includes(payload.state)) return { status: 400, async text() { return JSON.stringify({ error: 'bad state' }) } }
@@ -1129,6 +1168,134 @@ check('迭代页也能降级到应用内浏览器', allText(tree).includes('选�
 clickable(tree, '取消').props.onClick()
 tree = await settle(createElement(Panel, {}))
 check('取消后对话框关闭', !allText(tree).includes('选一个文件夹'))
+
+/* ==================== 和上一版比：两版正文的差异 ==================== */
+
+// 再造两轮，好让「毕业论文」这条产线多两版可以互相比
+extraRounds.push({
+	id: '20260913T1000-毕业论文-5',
+	at: 1789200000000,
+	day: '2026-09-12',
+	line: '毕业论文',
+	artifact: '论文全文.docx',
+	snapshot: '.versions/20260913T1000-论文全文.docx',
+	kind: 'docx',
+	bytes: 39000,
+	bytesText: '38.1 KB',
+	tool: 'python thesis_docx.py',
+	by: 'dsh',
+	summary: '重跑一遍，内容没动',
+	sources: [{ path: '03-第三章-物料衡算.md', note: '' }]
+})
+extraRounds.push({
+	id: '20260914T1000-毕业论文-6',
+	at: 1789300000000,
+	day: '2026-09-13',
+	line: '毕业论文',
+	artifact: '论文全文.docx',
+	snapshot: '.versions/打不开的.docx',
+	kind: 'docx',
+	bytes: 39000,
+	bytesText: '38.1 KB',
+	tool: 'python thesis_docx.py',
+	by: 'dsh',
+	summary: '这一版的快照读不出来',
+	sources: [{ path: '03-第三章-物料衡算.md', note: '' }]
+})
+
+clickable(tree, '迭代').props.onClick()
+tree = await settle(createElement(Panel, {}))
+clickable(tree, '读取').props.onClick()
+tree = await settle(createElement(Panel, {}))
+check('新加的两轮进时间轴了', allText(tree).includes('重跑一遍，内容没动') && allText(tree).includes('这一版的快照读不出来'))
+
+const textCalls = () => requests.filter((url) => url.includes('/text?'))
+/** 时间轴上某一轮的行（按它的摘要认）。 */
+const roundRow = (summary) => findAll(tree, (node) => node.host === 'div' && allText(node).includes(summary) && typeof node.props.onClick === 'function')[0]
+
+// ① 最新一轮的「快照」读不出 → 如实说，不编
+roundRow('这一版的快照读不出来').props.onClick()
+tree = await settle(createElement(Panel, {}))
+const diffButton = clickable(tree, '和上一版比')
+check('选中一轮后有「和上一版比」', diffButton !== undefined)
+check('按钮说明写清了它做什么', String(diffButton?.props.title).includes('一段一段标出来'))
+check('有上一版可比（按钮不是灰的）', diffButton?.props.disabled === false)
+diffButton.props.onClick()
+tree = await settle(createElement(Panel, {}))
+check('点了之后去读两版正文', textCalls().length === 2, JSON.stringify(textCalls()))
+check('读的是这一轮和上一轮的快照', textCalls().some((url) => url.includes('%E6%89%93%E4%B8%8D%E5%BC%80%E7%9A%84')) && textCalls().some((url) => url.includes('20260913T1000')), JSON.stringify(textCalls()))
+check('两版都带着产线名', textCalls().every((url) => url.includes('line=')))
+check('时间轴让位给对比视图', !allText(tree).includes('补经济分析敏感性'))
+check('读不出正文时把原因摆出来', allText(tree).includes('读不到这一版'), allText(tree).slice(0, 300))
+check('读不出时不崩，还能退回时间轴', clickable(tree, '← 回到时间轴') !== undefined)
+clickable(tree, '← 回到时间轴').props.onClick()
+tree = await settle(createElement(Panel, {}))
+check('退回时间轴', allText(tree).includes('载入演示') && allText(tree).includes('补经济分析敏感性'))
+
+// ② 换成「重跑一遍」那一轮：和上一版（20260912T1600）比 → 真差异
+roundRow('重跑一遍，内容没动').props.onClick()
+tree = await settle(createElement(Panel, {}))
+clickable(tree, '和上一版比').props.onClick()
+tree = await settle(createElement(Panel, {}))
+const baseline = findAll(tree, (node) => node.host === 'select')[0]
+check('对比视图有基线选择器', baseline !== undefined)
+check('基线候选就是同产线更早的轮次', baseline.props.children.length === 4, `实际 ${baseline.props.children.length} 项`)
+check('默认基线是上一轮', baseline.props.value === '20260912T1600-毕业论文-5', String(baseline.props.value))
+check('统计出新增与删掉的段数', allText(tree).includes('新增 2 段 · 删掉 2 段 · 相同 6 段'), allText(tree).slice(0, 400))
+check('改过的段落出现在对比里', allText(tree).includes('乙苯转化率取 0.58，塔顶采出 1.2 t/h') && allText(tree).includes('乙苯转化率取 0.62，塔顶采出 1.2 t/h'))
+check('整段换掉的也标出来了', allText(tree).includes('热量衡算表已重算') && allText(tree).includes('设备选型按老方案'))
+check('连续未改动的段折成一行（不把屏幕撑满）', allText(tree).includes('中间 4 段没有变化'), allText(tree).slice(0, 400))
+check('未改动的段不逐段罗列', !allText(tree).includes('未改动甲'))
+check('对比视图标了两个文件的来去', allText(tree).includes('.versions/20260912T1600-论文全文.docx') && allText(tree).includes('.versions/20260913T1000-论文全文.docx'))
+
+// 段内按词高亮：0.62 → 0.58 这种改动要自己跳出来
+const highlighted = findAll(tree, (node) => node.host === 'span' && typeof node.props.style?.background === 'string' && node.props.style.background.includes('rgba'))
+check('段内改动的词加了高亮底纹', highlighted.length > 0, `实际 ${highlighted.length} 处`)
+check('高亮的是真正变了的那个数', highlighted.some((node) => node.children?.[0]?.text === '0.62') && highlighted.some((node) => node.children?.[0]?.text === '0.58'), JSON.stringify(highlighted.map((n) => n.children?.[0]?.text)))
+check('没变的词不高亮', !highlighted.some((node) => node.children?.[0]?.text === '乙苯转化率取'))
+
+// ③ 换基线到 20260911T2210（内容和这一版一字不差）→ 明说，不装作有变化
+baseline.props.onChange({ target: { value: '20260911T2210-毕业论文-3' } })
+tree = await settle(createElement(Panel, {}))
+check('换基线后重新读两版', textCalls().some((url) => url.includes('20260911T2210')), JSON.stringify(textCalls().slice(-2)))
+check('两版完全一致时明说', allText(tree).includes('两版正文完全一致'), allText(tree).slice(0, 400))
+check('完全一致时提示「可能是没改就重新生成」', allText(tree).includes('没改就重新生成'))
+check('统计徽章不带增删', allText(tree).includes('新增 0 段 · 删掉 0 段'))
+
+// 收起
+const beforeClose = textCalls().length
+clickable(tree, '← 回到时间轴').props.onClick()
+tree = await settle(createElement(Panel, {}))
+check('收起后回到时间轴', allText(tree).includes('载入演示'))
+check('收起后不再读正文', textCalls().length === beforeClose, `实际 ${textCalls().length} 次`)
+
+// ④ 更旧的那一轮没有上一版 → 按钮是灰的，悬停说原因
+roundRow('第二章重写').props.onClick()
+tree = await settle(createElement(Panel, {}))
+check('没有上一版时按钮置灰', clickable(tree, '和上一版比')?.props.disabled === true)
+check('置灰原因写清楚了', String(clickable(tree, '和上一版比')?.props.title).includes('没有更早的轮次'), String(clickable(tree, '和上一版比')?.props.title))
+
+/* ==================== 差异算法的边界（纯函数） ==================== */
+
+const { lcsDiff, diffBlocks, diffWords, withAlpha } = client.__internals
+const eqText = (x, y) => x.text === y.text
+const opsOf = (a, b) => lcsDiff(a.map((text) => ({ kind: 'p', text })), b.map((text) => ({ kind: 'p', text })), eqText, 1500000)
+
+check('两版一模一样 → 全是 same', opsOf(['a', 'b'], ['a', 'b']).every((op) => op.op === 'same'))
+check('旧版为空 → 全是 add', opsOf([], ['a', 'b']).every((op) => op.op === 'add'))
+check('新版为空 → 全是 del', opsOf(['a', 'b'], []).every((op) => op.op === 'del'))
+check('中间插一段 → 只多一个 add', opsOf(['a', 'c'], ['a', 'b', 'c']).filter((op) => op.op === 'add').length === 1)
+check('删掉一段 → 只多一个 del', opsOf(['a', 'b', 'c'], ['a', 'c']).filter((op) => op.op === 'del').length === 1)
+check('两头都改了 → 前后各有增删', opsOf(['a', 'x'], ['b', 'y']).length === 4)
+check('段尾空格不算差异', diffBlocks([{ kind: 'p', text: '同一段  ' }], [{ kind: 'p', text: '同一段' }]).every((op) => op.op === 'same'))
+check('序列太大时不当真算（粗但不能卡死）', lcsDiff([1, 2, 3], [4, 5, 6], (x, y) => x === y, 1).length === 6)
+check('词级差异认得数字', diffWords('转化率 0.62 完成', '转化率 0.58 完成').some((op) => op.op === 'del' && op.item === '0.62'))
+check('中文按字切', diffWords('甲乙丙', '甲乙丁').filter((op) => op.op !== 'same').map((op) => op.item).join('') === '丙丁')
+check('英文按词切（不拆散一个单词）', diffWords('the quick fox', 'the slow fox').filter((op) => op.op !== 'same').map((op) => op.item).join('') === 'quickslow')
+check('一边是空串时不报错', diffWords('', 'abc').every((op) => op.op === 'add'))
+check('颜色加透明度', withAlpha('#c92a2a', 0.2) === 'rgba(201, 42, 42, 0.2)', withAlpha('#c92a2a', 0.2))
+check('三位十六进制也认', withAlpha('#abc', 0.5) === 'rgba(170, 187, 204, 0.5)')
+check('认不出的颜色原样返回', withAlpha('var(--whatever)', 0.5) === 'var(--whatever)')
 
 /* ==================== 主题探测 ==================== */
 

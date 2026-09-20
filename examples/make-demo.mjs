@@ -19,9 +19,70 @@
 import { mkdirSync, writeFileSync, rmSync, utimesSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { deflateRawSync } from 'node:zlib'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(here, 'thesis-workbench')
+
+/* ---------- 造一个**真的** docx ---------- */
+
+/** CRC32（zip 的中央目录要带）。 */
+function crc32(buffer) {
+	let crc = ~0
+	for (let i = 0; i < buffer.length; i += 1) {
+		crc ^= buffer[i]
+		for (let k = 0; k < 8; k += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1))
+	}
+	return ~crc >>> 0
+}
+
+/**
+ * 把若干段落打成一个真正的 docx（zip + word/document.xml，deflate 压缩）。
+ *
+ * 演示数据必须是**真 Word**：插件的「和上一版比」要去解 docx 正文，
+ * 假文本文件点进去只会得到一句「读不出」，演示就白放了。
+ *
+ * @param blocks - `{ kind, text }` 数组（kind: h1/h2/p/li/table/row）。
+ * @returns docx 的 Buffer。
+ */
+function makeDocx(blocks) {
+	const xml = ['<?xml version="1.0" encoding="UTF-8"?><w:document xmlns:w="x"><w:body>']
+	for (const block of blocks) {
+		const style = block.kind === 'h1' ? '<w:pStyle w:val="Heading 1"/>' : block.kind === 'h2' ? '<w:pStyle w:val="Heading 2"/>' : ''
+		const list = block.kind === 'li' ? '<w:numPr><w:ilvl w:val="0"/></w:numPr>' : ''
+		const props = style === '' && list === '' ? '' : `<w:pPr>${style}${list}</w:pPr>`
+		xml.push(`<w:p>${props}<w:r><w:t>${block.text.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</w:t></w:r></w:p>`)
+	}
+	xml.push('</w:body></w:document>')
+	const body = Buffer.from(xml.join(''), 'utf8')
+	const payload = deflateRawSync(body)
+	const name = Buffer.from('word/document.xml', 'utf8')
+	const local = Buffer.alloc(30)
+	local.writeUInt32LE(0x04034b50, 0)
+	local.writeUInt16LE(20, 4)
+	local.writeUInt16LE(8, 8)
+	local.writeUInt32LE(crc32(body), 14)
+	local.writeUInt32LE(payload.length, 18)
+	local.writeUInt32LE(body.length, 22)
+	local.writeUInt16LE(name.length, 26)
+	const localBlock = Buffer.concat([local, name, payload])
+	const central = Buffer.alloc(46)
+	central.writeUInt32LE(0x02014b50, 0)
+	central.writeUInt16LE(20, 4)
+	central.writeUInt16LE(20, 6)
+	central.writeUInt16LE(8, 10)
+	central.writeUInt32LE(crc32(body), 16)
+	central.writeUInt32LE(payload.length, 20)
+	central.writeUInt32LE(body.length, 24)
+	central.writeUInt16LE(name.length, 28)
+	const eocd = Buffer.alloc(22)
+	eocd.writeUInt32LE(0x06054b50, 0)
+	eocd.writeUInt16LE(1, 8)
+	eocd.writeUInt16LE(1, 10)
+	eocd.writeUInt32LE(central.length, 12)
+	eocd.writeUInt32LE(localBlock.length, 16)
+	return Buffer.concat([localBlock, central, name, eocd])
+}
 
 /* 时间从 9/8 铺到 9/17，最后几轮留在「待审」。 */
 const T0 = new Date(2026, 8, 8, 9, 0, 0).getTime()
@@ -144,18 +205,35 @@ for (const [lineIdx, line] of LINES.entries()) {
 		const id = `${stamp(cursor)}-${line.name}-${roundIdx + 1}`
 		const snapName = `${stamp(cursor)}-${artifact.file}`
 		const snapRel = `.versions/${snapName}`
-		const body = [
-			`[演示文件] ${artifact.file}`,
-			`轮次 ${roundIdx + 1} / ${line.rounds.length}`,
-			`时间 ${new Date(cursor).toLocaleString('zh-CN', { hour12: false })}`,
-			`摘要 ${summary}`,
-			`来源 ${sources.join(' + ')}`,
-			'',
-			'（这是假数据，内容无意义；真实场景下这里是一份真正的 Word/PDF/Excel）'
-		].join('\n')
-		writeFileSync(join(versions, snapName), body, 'utf8')
+		// docx 产物写成**真 Word**：里面放这一轮改了什么，好让「和上一版比」真有得比。
+		// 每一轮都带着几段固定内容，于是相邻两版之间既有改动、也有没动的部分。
+		const docx = artifact.kind === 'docx'
+			? makeDocx([
+					{ kind: 'h1', text: `${artifact.file.replace('.docx', '')}　第 ${roundIdx + 1} 版` },
+					{ kind: 'p', text: `摘要：${summary}` },
+					{ kind: 'p', text: `改动来源：${sources.join(' + ')}` },
+					{ kind: 'h2', text: '一、设计依据' },
+					{ kind: 'p', text: '本设计以乙苯脱氢制苯乙烯为主线，年处理量 12 万吨。' },
+					{ kind: 'p', text: '分离工段采用两塔流程：乙苯/苯乙烯分离塔与苯乙烯精制塔。' },
+					{ kind: 'li', text: `第 ${roundIdx + 1} 轮的改动落在：${summary}` },
+					{ kind: 'h2', text: '二、主要结果' },
+					{ kind: 'p', text: `本轮结果：乙苯转化率 ${(0.62 - roundIdx * 0.01).toFixed(2)}，苯乙烯选择性 0.9${roundIdx % 10}。` }
+				])
+			: Buffer.from(
+					[
+						`[演示文件] ${artifact.file}`,
+						`轮次 ${roundIdx + 1} / ${line.rounds.length}`,
+						`时间 ${new Date(cursor).toLocaleString('zh-CN', { hour12: false })}`,
+						`摘要 ${summary}`,
+						`来源 ${sources.join(' + ')}`,
+						'',
+						'（这是假数据，内容无意义；真实场景下这里是一份真正的 Word/PDF/Excel）'
+					].join('\n'),
+					'utf8'
+				)
+		writeFileSync(join(versions, snapName), docx)
 		// 工作副本：名字永远不变，每次覆盖 —— 「最终版_真的最终版」就是这么消失的
-		writeFileSync(join(dir, artifact.file), body, 'utf8')
+		writeFileSync(join(dir, artifact.file), docx)
 		// 把两份文件的时间也拨回「记录里那一刻」：否则它们全是「刚写出来的」，
 		// 「还没进记录」那一块会把整个演示项目都报成漏记的（真实产线也一样对不上）。
 		const seconds = cursor / 1000
@@ -169,7 +247,7 @@ for (const [lineIdx, line] of LINES.entries()) {
 			artifact: artifact.file,
 			snapshot: snapRel,
 			kind: artifact.kind,
-			bytes: artifact.base + roundIdx * 137,
+			bytes: docx.length,
 			tool: artifact.tool,
 			by: 'dsh',
 			sources: sources.map((s) => ({ path: s })),

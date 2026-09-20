@@ -20,6 +20,7 @@ import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { deflateRawSync } from 'node:zlib'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const HOST = `file://${join(here, '..', 'lib', 'index.js').replace(/\\/g, '/')}`
@@ -398,6 +399,165 @@ check('三层同名文件归到同一个主干', result.body.pairs.length === 1,
 check('带两层尾巴的产物不算「无源产物」', result.body.counts.orphan === 0, JSON.stringify(result.body.counts))
 check('源与产物都识别到了', result.body.pairs[0]?.source !== null && result.body.pairs[0]?.artifact !== null)
 await rm(pairRoot, { recursive: true, force: true })
+
+/* ==================== /text：读一版正文（两版对比的地基） ==================== */
+
+/** CRC32（zip 的中央目录要带）。 */
+function crc32(buffer) {
+	let crc = ~0
+	for (let i = 0; i < buffer.length; i += 1) {
+		crc ^= buffer[i]
+		for (let k = 0; k < 8; k += 1) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1))
+	}
+	return ~crc >>> 0
+}
+
+/**
+ * 造一个**真的** docx：中央目录 + 一个压缩过的 word/document.xml。
+ * 用真 deflate 而不是假数据，否则测的就不是自己那条解压路。
+ */
+function makeDocx(xml, { stored = false } = {}) {
+	const name = Buffer.from('word/document.xml', 'utf8')
+	const body = Buffer.from(xml, 'utf8')
+	const payload = stored ? body : deflateRawSync(body)
+	const method = stored ? 0 : 8
+	const local = Buffer.alloc(30)
+	local.writeUInt32LE(0x04034b50, 0)
+	local.writeUInt16LE(20, 4)
+	local.writeUInt16LE(method, 8)
+	local.writeUInt32LE(crc32(body), 14)
+	local.writeUInt32LE(payload.length, 18)
+	local.writeUInt32LE(body.length, 22)
+	local.writeUInt16LE(name.length, 26)
+	const localBlock = Buffer.concat([local, name, payload])
+	const central = Buffer.alloc(46)
+	central.writeUInt32LE(0x02014b50, 0)
+	central.writeUInt16LE(20, 4)
+	central.writeUInt16LE(20, 6)
+	central.writeUInt16LE(method, 10)
+	central.writeUInt32LE(crc32(body), 16)
+	central.writeUInt32LE(payload.length, 20)
+	central.writeUInt32LE(body.length, 24)
+	central.writeUInt16LE(name.length, 28)
+	central.writeUInt32LE(0, 42)
+	const centralBlock = Buffer.concat([central, name])
+	const eocd = Buffer.alloc(22)
+	eocd.writeUInt32LE(0x06054b50, 0)
+	eocd.writeUInt16LE(1, 8)
+	eocd.writeUInt16LE(1, 10)
+	eocd.writeUInt32LE(centralBlock.length, 12)
+	eocd.writeUInt32LE(localBlock.length, 16)
+	return Buffer.concat([localBlock, centralBlock, eocd])
+}
+
+const { unzipEntry, docxBlocks, blocksFromText, decodeEntities, headingLevel } = host.__internals
+
+const SAMPLE_XML = `<?xml version="1.0" encoding="UTF-8"?>
+<w:document xmlns:w="x"><w:body>
+<w:p><w:pPr><w:pStyle w:val="Heading 1"/></w:pPr><w:r><w:t>第三章 物料衡算</w:t></w:r></w:p>
+<w:p><w:r><w:t xml:space="preserve">乙苯转化率取 </w:t></w:r><w:r><w:t>0.62</w:t></w:r><w:r><w:t>，塔顶采出 </w:t></w:r><w:r><w:t>1.2 t/h</w:t></w:r><w:t>   </w:t></w:p>
+<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/></w:numPr></w:pPr><w:r><w:t>第一条</w:t></w:r></w:p>
+<w:tbl><w:tr><w:tc><w:p><w:r><w:t>项目</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>数值</w:t></w:r></w:p></w:tc></w:tr>
+<w:tr><w:tc><w:p><w:r><w:t>转化率</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>0.62</w:t></w:r></w:p></w:tc></w:tr></w:tbl>
+<w:p><w:pPr><w:pStyle w:val="标题 2"/></w:pPr><w:r><w:t>中文样式也是标题</w:t></w:r></w:p>
+<w:p><w:pPr><w:outlineLvl w:val="0"/></w:pPr><w:r><w:t>大纲级别也是标题</w:t></w:r></w:p>
+<w:p><w:r><w:t>符号 &amp; 尖括号 &lt;tag&gt; 破折号 &#x2014;</w:t></w:r></w:p>
+<w:p><w:r><w:instrText>PAGE  \\* MERGEFORMAT</w:instrText><w:t>看得见的正文</w:t></w:r></w:p>
+</w:body></w:document>`
+
+check('zip 能解出 deflate 压缩的条目', String(unzipEntry(makeDocx(SAMPLE_XML), 'word/document.xml')).includes('物料衡算'))
+check('zip 也能解出不压缩（stored）的条目', String(unzipEntry(makeDocx(SAMPLE_XML, { stored: true }), 'word/document.xml')).includes('物料衡算'))
+check('zip 里没有的条目返回 null', unzipEntry(makeDocx(SAMPLE_XML), 'word/nope.xml') === null)
+check('不是 zip 的 docx 返回 null（不当成崩溃）', unzipEntry(Buffer.from('这不是 zip', 'utf8'), 'word/document.xml') === null)
+
+const sample = docxBlocks(unzipEntry(makeDocx(SAMPLE_XML), 'word/document.xml').toString('utf8'))
+check('docx 段落按文档顺序解出来', sample.map((b) => b.text)[0] === '第三章 物料衡算')
+check('跨多个 run 的文字拼成一段', sample.some((b) => b.text === '乙苯转化率取 0.62，塔顶采出 1.2 t/h'), JSON.stringify(sample[1]))
+check('段尾空白被去掉（不当成改动）', sample.every((b) => b.text === b.text.replace(/\s+$/, '')))
+check('Heading 1 认成一级标题', sample[0].kind === 'h1')
+check('中文「标题 2」也认成标题', sample.some((b) => b.kind === 'h2' && b.text === '中文样式也是标题'))
+check('大纲级别也能当标题', sample.some((b) => b.kind === 'h1' && b.text === '大纲级别也是标题'))
+check('列表项标成 li', sample.some((b) => b.kind === 'li' && b.text === '第一条'))
+check('表格行用竖线把单元格连起来', sample.some((b) => b.kind === 'row' && b.text === '项目 | 数值'))
+check('表格开头有一个标记块', sample.some((b) => b.kind === 'table'))
+check('XML 实体被解码', sample.some((b) => b.text === '符号 & 尖括号 <tag> 破折号 —'), JSON.stringify(sample.at(-2)))
+check('域代码（页码那种）不当正文', !sample.some((b) => b.text.includes('MERGEFORMAT')))
+check('标题层级工具函数', headingLevel('Heading 3') === 3 && headingLevel('标题 1') === 1 && headingLevel('正文') === 0 && headingLevel('') === 0)
+check('实体解码工具函数', decodeEntities('a&amp;b&#x2014;c&#65;') === 'a&b—cA')
+check('坏实体原样留着（不猜）', decodeEntities('&notanentity;') === '&notanentity;')
+
+const mdBlocks = blocksFromText('# 标题\n\n正文一行\n- 列表项\n| a | b |\n', '.md')
+check('md 的标题/列表/表格行都认', mdBlocks[0].kind === 'h1' && mdBlocks.some((b) => b.kind === 'li') && mdBlocks.some((b) => b.kind === 'row'))
+check('md 的空行不占一段', blocksFromText('a\n\n\n\nb\n', '.md').length === 2)
+
+const textRoot = await mkdtemp(join(tmpdir(), 'dsh-workbench-text-'))
+const textLine = join(textRoot, '毕业论文')
+await mkdir(join(textLine, '.versions'), { recursive: true })
+await writeFile(join(textLine, '.versions', '20260911T2210-论文全文.docx'), makeDocx(SAMPLE_XML))
+await writeFile(join(textLine, '.versions', '20260910T1400-论文全文.docx'), makeDocx(SAMPLE_XML.replace('0.62', '0.58').replace('塔顶采出 ', '')))
+await writeFile(join(textLine, '03-第三章-物料衡算.md'), '# 第三章\n\n转化率 0.62\n', 'utf8')
+await writeFile(join(textLine, '04-第四章-设备选型.md'), '# 第四章\n\n精馏塔塔径 1.2 m\n', 'utf8')
+await writeFile(join(textLine, '图片.png'), Buffer.from('not-a-doc'))
+
+const textOf = (file, line = '毕业论文') =>
+	call(route, `/api/dsh-workbench/text?dir=${encodeURIComponent(textRoot)}&line=${encodeURIComponent(line)}&file=${encodeURIComponent(file)}`)
+
+result = await textOf('.versions/20260911T2210-论文全文.docx')
+check('/text 读 docx 返回块', result.status === 200 && result.body.ok === true && Array.isArray(result.body.blocks) && result.body.blocks.length > 5, JSON.stringify(result.body).slice(0, 160))
+check('/text 报出读的是哪个文件', result.body.file === '.versions/20260911T2210-论文全文.docx' && result.body.kind === 'docx')
+check('/text 没截断时 truncated 为 false', result.body.truncated === false)
+
+result = await textOf('03-第三章-物料衡算.md')
+check('/text 读 md 也能返回块', result.status === 200 && result.body.ok === true && result.body.blocks[0].text === '第三章')
+check('/text 读 md 时 kind 是 md', result.body.kind === 'md')
+
+result = await textOf('没有这个.docx')
+check('/text 文件不在原处时 404 且是人话', result.status === 404 && typeof result.body.error === 'string', String(result.status))
+
+result = await textOf('..\\..\\外面的.docx')
+check('/text 拒绝路径穿越', result.status === 400 && String(result.body.error).includes('相对路径'), String(result.status))
+
+result = await call(route, `/api/dsh-workbench/text?dir=${encodeURIComponent(textRoot)}&line=..&file=a.docx`)
+check('/text 拒绝非法的产线名', result.status === 400 && String(result.body.error).includes('产线'), String(result.status))
+
+result = await call(route, `/api/dsh-workbench/text?dir=${encodeURIComponent(textRoot)}&line=毕业论文&file=${encodeURIComponent('C:\\windows\\win.ini')}`)
+check('/text 拒绝绝对路径', result.status === 400, String(result.status))
+
+result = await call(route, `/api/dsh-workbench/text?dir=${encodeURIComponent(textRoot)}&line=毕业论文&file=${encodeURIComponent('../毕业论文/03-第三章-物料衡算.md')}`)
+check('/text 拒绝用 .. 绕回项目内', result.status === 400, String(result.status))
+
+result = await textOf('图片.png')
+check('/text 拒绝白名单外的类型并说明支持什么', result.status === 400 && String(result.body.error).includes('纯文本'), String(result.status))
+
+result = await call(route, `/api/dsh-workbench/text?dir=${encodeURIComponent(textRoot)}&line=${encodeURIComponent('毕业论文')}&file=${encodeURIComponent('.versions\\20260911T2210-论文全文.docx')}`)
+check('/text 快照在 .versions/ 子目录里也读得到', result.status === 200 && result.body.ok === true, String(result.status))
+
+result = await call(route, '/api/dsh-workbench/text')
+check('/text 缺参数时 400', result.status === 400, String(result.status))
+
+result = await call(route, '/api/dsh-workbench/text?dir=' + encodeURIComponent(textRoot))
+check('/text 缺 file 时 400', result.status === 400, String(result.status))
+
+result = await call(route, `/api/dsh-workbench/text?dir=${encodeURIComponent(textRoot)}&line=毕业论文&file=x.docx`, 'POST')
+check('/text 只接受 GET', result.status === 405, String(result.status))
+
+// 假 docx：扩展名对，内容不是 zip
+await writeFile(join(textLine, '假的.docx'), '这只是一个文本文件，不是 zip', 'utf8')
+result = await textOf('假的.docx')
+check('不是 zip 的 docx 如实说读不出，不当 500', result.status === 200 && result.body.ok === false && String(result.body.error).includes('document.xml'), JSON.stringify(result.body).slice(0, 160))
+
+// 超长文档：截断要说出来，不能把整个 JSON 撑爆
+const huge = makeDocx(`<w:document xmlns:w="x"><w:body>${'<w:p><w:r><w:t>段落内容</w:t></w:r></w:p>'.repeat(6000)}</w:body></w:document>`)
+await writeFile(join(textLine, '超长.docx'), huge)
+result = await textOf('超长.docx')
+check('超长文档被截断且如实标记', result.body.truncated === true && result.body.blocks.length === 4000, `实际 ${result.body.blocks.length} 段`)
+
+// 单产线项目：line 传 '.' 也认（跟 /reveal 一致）
+await writeFile(join(textRoot, '论文全文.docx'), makeDocx(SAMPLE_XML))
+result = await call(route, `/api/dsh-workbench/text?dir=${encodeURIComponent(textRoot)}&line=.&file=${encodeURIComponent('论文全文.docx')}`)
+check('/text 支持 line=.（单产线项目放根目录）', result.status === 200 && result.body.ok === true, String(result.status))
+
+await rm(textRoot, { recursive: true, force: true })
 
 /* ==================== 边界 ==================== */
 
