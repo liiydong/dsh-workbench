@@ -37,7 +37,57 @@ function crc32(buffer) {
 }
 
 /**
- * 把若干段落打成一个真正的 docx（zip + word/document.xml，deflate 压缩）。
+ * 造一个 zip：中央目录 + 若干条目（真 deflate 压缩）。
+ *
+ * @param entries - `{ name, text }` 数组。
+ * @returns zip 的 Buffer。
+ */
+function makeZip(entries) {
+	const locals = []
+	const centrals = []
+	let localOffset = 0
+	for (const entry of entries) {
+		const name = Buffer.from(entry.name, 'utf8')
+		const body = Buffer.from(entry.text, 'utf8')
+		const payload = deflateRawSync(body)
+		const local = Buffer.alloc(30)
+		local.writeUInt32LE(0x04034b50, 0)
+		local.writeUInt16LE(20, 4)
+		local.writeUInt16LE(8, 8)
+		local.writeUInt32LE(crc32(body), 14)
+		local.writeUInt32LE(payload.length, 18)
+		local.writeUInt32LE(body.length, 22)
+		local.writeUInt16LE(name.length, 26)
+		const localBlock = Buffer.concat([local, name, payload])
+		locals.push(localBlock)
+		const central = Buffer.alloc(46)
+		central.writeUInt32LE(0x02014b50, 0)
+		central.writeUInt16LE(20, 4)
+		central.writeUInt16LE(20, 6)
+		central.writeUInt16LE(8, 10)
+		central.writeUInt32LE(crc32(body), 16)
+		central.writeUInt32LE(payload.length, 20)
+		central.writeUInt32LE(body.length, 24)
+		central.writeUInt16LE(name.length, 28)
+		central.writeUInt32LE(localOffset, 42)
+		centrals.push(Buffer.concat([central, name]))
+		localOffset += localBlock.length
+	}
+	const centralBlock = Buffer.concat(centrals)
+	const eocd = Buffer.alloc(22)
+	eocd.writeUInt32LE(0x06054b50, 0)
+	eocd.writeUInt16LE(entries.length, 8)
+	eocd.writeUInt16LE(entries.length, 10)
+	eocd.writeUInt32LE(centralBlock.length, 12)
+	eocd.writeUInt32LE(Buffer.concat(locals).length, 16)
+	return Buffer.concat([...locals, centralBlock, eocd])
+}
+
+/** XML 里必须躲开的两个字符。 */
+const xmlSafe = (text) => String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+
+/**
+ * 把若干段落打成一个真正的 docx（zip + word/document.xml）。
  *
  * 演示数据必须是**真 Word**：插件的「和上一版比」要去解 docx 正文，
  * 假文本文件点进去只会得到一句「读不出」，演示就白放了。
@@ -51,37 +101,39 @@ function makeDocx(blocks) {
 		const style = block.kind === 'h1' ? '<w:pStyle w:val="Heading 1"/>' : block.kind === 'h2' ? '<w:pStyle w:val="Heading 2"/>' : ''
 		const list = block.kind === 'li' ? '<w:numPr><w:ilvl w:val="0"/></w:numPr>' : ''
 		const props = style === '' && list === '' ? '' : `<w:pPr>${style}${list}</w:pPr>`
-		xml.push(`<w:p>${props}<w:r><w:t>${block.text.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</w:t></w:r></w:p>`)
+		xml.push(`<w:p>${props}<w:r><w:t>${xmlSafe(block.text)}</w:t></w:r></w:p>`)
 	}
 	xml.push('</w:body></w:document>')
-	const body = Buffer.from(xml.join(''), 'utf8')
-	const payload = deflateRawSync(body)
-	const name = Buffer.from('word/document.xml', 'utf8')
-	const local = Buffer.alloc(30)
-	local.writeUInt32LE(0x04034b50, 0)
-	local.writeUInt16LE(20, 4)
-	local.writeUInt16LE(8, 8)
-	local.writeUInt32LE(crc32(body), 14)
-	local.writeUInt32LE(payload.length, 18)
-	local.writeUInt32LE(body.length, 22)
-	local.writeUInt16LE(name.length, 26)
-	const localBlock = Buffer.concat([local, name, payload])
-	const central = Buffer.alloc(46)
-	central.writeUInt32LE(0x02014b50, 0)
-	central.writeUInt16LE(20, 4)
-	central.writeUInt16LE(20, 6)
-	central.writeUInt16LE(8, 10)
-	central.writeUInt32LE(crc32(body), 16)
-	central.writeUInt32LE(payload.length, 20)
-	central.writeUInt32LE(body.length, 24)
-	central.writeUInt16LE(name.length, 28)
-	const eocd = Buffer.alloc(22)
-	eocd.writeUInt32LE(0x06054b50, 0)
-	eocd.writeUInt16LE(1, 8)
-	eocd.writeUInt16LE(1, 10)
-	eocd.writeUInt32LE(central.length, 12)
-	eocd.writeUInt32LE(localBlock.length, 16)
-	return Buffer.concat([localBlock, central, name, eocd])
+	return makeZip([{ name: 'word/document.xml', text: xml.join('') }])
+}
+
+/**
+ * 把若干行打成一个真正的 xlsx（zip + workbook + rels + 一张表）。
+ *
+ * 表格的单位是**行**，所以演示里每一轮都让某几行变一变、某一行整行换掉，
+ * 相邻两版之间才既有改动、又有没动的地方。
+ *
+ * @param rows - 二维数组；数字走数字单元格，别的走内联字符串。
+ * @returns xlsx 的 Buffer。
+ */
+function makeXlsx(rows) {
+	const sheet = `<?xml version="1.0" encoding="UTF-8"?><worksheet xmlns="x">${rows
+		.map(
+			(cells, r) =>
+				`<row r="${r + 1}">${cells
+					.map((value, c) => {
+						const ref = `${String.fromCharCode(65 + c)}${r + 1}`
+						return typeof value === 'number' ? `<c r="${ref}"><v>${value}</v></c>` : `<c r="${ref}" t="inlineStr"><is><t>${xmlSafe(value)}</t></is></c>`
+					})
+					.join('')}</row>`
+		)
+		.join('')}</worksheet>`
+	return makeZip([
+		{ name: '[Content_Types].xml', text: '<?xml version="1.0"?><Types/>' },
+		{ name: 'xl/workbook.xml', text: '<?xml version="1.0" encoding="UTF-8"?><workbook xmlns:r="rel"><sheets><sheet name="数据" sheetId="1" r:id="rId1"/></sheets></workbook>' },
+		{ name: 'xl/_rels/workbook.xml.rels', text: '<?xml version="1.0"?><Relationships><Relationship Id="rId1" Type="worksheet" Target="worksheets/sheet1.xml"/></Relationships>' },
+		{ name: 'xl/worksheets/sheet1.xml', text: sheet }
+	])
 }
 
 /* 时间从 9/8 铺到 9/17，最后几轮留在「待审」。 */
@@ -205,35 +257,45 @@ for (const [lineIdx, line] of LINES.entries()) {
 		const id = `${stamp(cursor)}-${line.name}-${roundIdx + 1}`
 		const snapName = `${stamp(cursor)}-${artifact.file}`
 		const snapRel = `.versions/${snapName}`
-		// docx 产物写成**真 Word**：里面放这一轮改了什么，好让「和上一版比」真有得比。
-		// 每一轮都带着几段固定内容，于是相邻两版之间既有改动、也有没动的部分。
-		const docx = artifact.kind === 'docx'
-			? makeDocx([
-					{ kind: 'h1', text: `${artifact.file.replace('.docx', '')}　第 ${roundIdx + 1} 版` },
-					{ kind: 'p', text: `摘要：${summary}` },
-					{ kind: 'p', text: `改动来源：${sources.join(' + ')}` },
-					{ kind: 'h2', text: '一、设计依据' },
-					{ kind: 'p', text: '本设计以乙苯脱氢制苯乙烯为主线，年处理量 12 万吨。' },
-					{ kind: 'p', text: '分离工段采用两塔流程：乙苯/苯乙烯分离塔与苯乙烯精制塔。' },
-					{ kind: 'li', text: `第 ${roundIdx + 1} 轮的改动落在：${summary}` },
-					{ kind: 'h2', text: '二、主要结果' },
-					{ kind: 'p', text: `本轮结果：乙苯转化率 ${(0.62 - roundIdx * 0.01).toFixed(2)}，苯乙烯选择性 0.9${roundIdx % 10}。` }
-				])
-			: Buffer.from(
-					[
-						`[演示文件] ${artifact.file}`,
-						`轮次 ${roundIdx + 1} / ${line.rounds.length}`,
-						`时间 ${new Date(cursor).toLocaleString('zh-CN', { hour12: false })}`,
-						`摘要 ${summary}`,
-						`来源 ${sources.join(' + ')}`,
-						'',
-						'（这是假数据，内容无意义；真实场景下这里是一份真正的 Word/PDF/Excel）'
-					].join('\n'),
-					'utf8'
-				)
-		writeFileSync(join(versions, snapName), docx)
+		// docx / xlsx 产物写成**真容器**：里面放这一轮改了什么，好让「和上一版比」真有得比。
+		// 每一轮都带着几行固定内容，于是相邻两版之间既有改动、也有没动的部分。
+		const body =
+			artifact.kind === 'docx'
+				? makeDocx([
+						{ kind: 'h1', text: `${artifact.file.replace('.docx', '')}　第 ${roundIdx + 1} 版` },
+						{ kind: 'p', text: `摘要：${summary}` },
+						{ kind: 'p', text: `改动来源：${sources.join(' + ')}` },
+						{ kind: 'h2', text: '一、设计依据' },
+						{ kind: 'p', text: '本设计以乙苯脱氢制苯乙烯为主线，年处理量 12 万吨。' },
+						{ kind: 'p', text: '分离工段采用两塔流程：乙苯/苯乙烯分离塔与苯乙烯精制塔。' },
+						{ kind: 'li', text: `第 ${roundIdx + 1} 轮的改动落在：${summary}` },
+						{ kind: 'h2', text: '二、主要结果' },
+						{ kind: 'p', text: `本轮结果：乙苯转化率 ${(0.62 - roundIdx * 0.01).toFixed(2)}，苯乙烯选择性 0.9${roundIdx % 10}。` }
+					])
+				: artifact.kind === 'xlsx'
+					? makeXlsx([
+							['项目', '数值', '单位', '备注'],
+							['乙苯转化率', Number((0.62 - roundIdx * 0.01).toFixed(2)), '-', `第 ${roundIdx + 1} 轮`],
+							['苯乙烯选择性', 0.9 + (roundIdx % 10) / 100, '-', ''],
+							['塔顶压力', 38.5, 'kPa', '历轮不变'],
+							['塔径', 1.2 + roundIdx * 0.05, 'm', roundIdx >= 3 ? '换过塔径' : '初版'],
+							['本轮改动', summary, '', '']
+						])
+					: Buffer.from(
+							[
+								`[演示文件] ${artifact.file}`,
+								`轮次 ${roundIdx + 1} / ${line.rounds.length}`,
+								`时间 ${new Date(cursor).toLocaleString('zh-CN', { hour12: false })}`,
+								`摘要 ${summary}`,
+								`来源 ${sources.join(' + ')}`,
+								'',
+								'（这是假数据，内容无意义；真实场景下这里是一份真正的 Word/PDF/Excel）'
+							].join('\n'),
+							'utf8'
+						)
+		writeFileSync(join(versions, snapName), body)
 		// 工作副本：名字永远不变，每次覆盖 —— 「最终版_真的最终版」就是这么消失的
-		writeFileSync(join(dir, artifact.file), docx)
+		writeFileSync(join(dir, artifact.file), body)
 		// 把两份文件的时间也拨回「记录里那一刻」：否则它们全是「刚写出来的」，
 		// 「还没进记录」那一块会把整个演示项目都报成漏记的（真实产线也一样对不上）。
 		const seconds = cursor / 1000
@@ -247,7 +309,7 @@ for (const [lineIdx, line] of LINES.entries()) {
 			artifact: artifact.file,
 			snapshot: snapRel,
 			kind: artifact.kind,
-			bytes: docx.length,
+			bytes: body.length,
 			tool: artifact.tool,
 			by: 'dsh',
 			sources: sources.map((s) => ({ path: s })),

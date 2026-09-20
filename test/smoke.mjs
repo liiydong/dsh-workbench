@@ -303,13 +303,36 @@ const TEXT_NEW = TEXT_OLD.map((block, index) =>
 const TEXT_SAME = TEXT_NEW.map((block) => ({ ...block }))
 /** 桩的「读不出来的正文」（扩展名对、内容不是 zip）。 */
 const TEXT_BROKEN = { ok: false, error: '这个 docx 里找不到 word/document.xml' }
+
+/** 桩的两版表格：行结构一样，只有一个格子变了（0.58 → 0.61）、另一行整个换掉。 */
+const TABLE_OLD = [
+	{ kind: 'sheet', text: '物料衡算' },
+	{ kind: 'row', text: '组分 | 进料 | 出料' },
+	{ kind: 'row', text: '乙苯 | 1.2 | 0.44' },
+	{ kind: 'row', text: '苯乙烯 | 0 | 0.58' },
+	{ kind: 'sheet', text: '设备' },
+	{ kind: 'row', text: '项目 | 数值' },
+	{ kind: 'row', text: '塔径 | 1.2' }
+]
+const TABLE_NEW = [
+	{ kind: 'sheet', text: '物料衡算' },
+	{ kind: 'row', text: '组分 | 进料 | 出料' },
+	{ kind: 'row', text: '乙苯 | 1.2 | 0.44' },
+	{ kind: 'row', text: '苯乙烯 | 0 | 0.61' },
+	{ kind: 'sheet', text: '设备' },
+	{ kind: 'row', text: '项目 | 数值' },
+	{ kind: 'row', text: '塔径 | 1.4' }
+]
 const TEXT_DOCS = {
 	'.versions/20260910T1400-论文全文.docx': TEXT_OLD,
 	'.versions/20260911T2210-论文全文.docx': TEXT_NEW,
 	'.versions/20260912T1000-论文全文.docx': TEXT_OLD,
 	'.versions/20260912T1600-论文全文.docx': TEXT_OLD,
 	'.versions/20260913T1000-论文全文.docx': TEXT_SAME,
-	'.versions/打不开的.docx': TEXT_BROKEN
+	'.versions/打不开的.docx': TEXT_BROKEN,
+	'.versions/20260910T1400-衡算表.xlsx': TABLE_OLD,
+	'.versions/20260911T2210-衡算表.xlsx': TABLE_NEW,
+	'.versions/打不开的.xlsx': TEXT_BROKEN
 }
 /** 桩的 md 源（磁盘上只有一份，所以两轮读到的永远一样——这正是「比 md 源」不做的原因）。 */
 const TEXT_SOURCES = { '03-第三章-物料衡算.md': [{ kind: 'h1', text: '第三章' }, { kind: 'p', text: '转化率 0.55' }] }
@@ -518,7 +541,8 @@ async function fakeFetch(url, options) {	const method = options?.method ?? 'GET'
 		const file = query.get('file') ?? ''
 		const blocks = TEXT_DOCS[file] ?? TEXT_SOURCES[file]
 		if (blocks === undefined) return { status: 404, async text() { return JSON.stringify({ error: '文件不在原处了' }) } }
-		return { status: 200, async text() { return JSON.stringify({ ok: blocks !== TEXT_BROKEN, file, kind: 'docx', blocks: blocks === TEXT_BROKEN ? [] : blocks, truncated: false, ...(blocks === TEXT_BROKEN ? { error: TEXT_BROKEN.error } : {}) }) } }
+		const kind = /\.([^.]+)$/.exec(file)?.[1] ?? 'txt'
+		return { status: 200, async text() { return JSON.stringify({ ok: blocks !== TEXT_BROKEN, file, kind, blocks: blocks === TEXT_BROKEN ? [] : blocks, truncated: false, ...(blocks === TEXT_BROKEN ? { error: TEXT_BROKEN.error } : {}) }) } }
 	}
 	if (method === 'POST' && url.includes('/decide')) {
 		const payload = JSON.parse(options.body)
@@ -1296,6 +1320,66 @@ check('一边是空串时不报错', diffWords('', 'abc').every((op) => op.op ==
 check('颜色加透明度', withAlpha('#c92a2a', 0.2) === 'rgba(201, 42, 42, 0.2)', withAlpha('#c92a2a', 0.2))
 check('三位十六进制也认', withAlpha('#abc', 0.5) === 'rgba(170, 187, 204, 0.5)')
 check('认不出的颜色原样返回', withAlpha('var(--whatever)', 0.5) === 'var(--whatever)')
+
+/* ==================== 表格也能比：xlsx 的单位是行 ==================== */
+
+// 再造两轮「经济分析」：产物是 xlsx，两版之间只有一个格子变了
+extraRounds.push({
+	id: '20260915T1000-经济分析-1',
+	at: 1789400000000,
+	day: '2026-09-15',
+	line: '经济分析',
+	artifact: '经济分析表.xlsx',
+	snapshot: '.versions/20260910T1400-衡算表.xlsx',
+	kind: 'xlsx',
+	bytes: 26000,
+	bytesText: '25.4 KB',
+	tool: 'python econ_table_xlsx.py',
+	by: 'dsh',
+	summary: '衡算表第一版',
+	sources: [{ path: '05-第五章-经济分析.md', note: '' }]
+})
+extraRounds.push({
+	id: '20260916T1000-经济分析-2',
+	at: 1789500000000,
+	day: '2026-09-16',
+	line: '经济分析',
+	artifact: '经济分析表.xlsx',
+	snapshot: '.versions/20260911T2210-衡算表.xlsx',
+	kind: 'xlsx',
+	bytes: 26100,
+	bytesText: '25.5 KB',
+	tool: 'python econ_table_xlsx.py',
+	by: 'dsh',
+	summary: '衡算表改了一个数',
+	sources: [{ path: '05-第五章-经济分析.md', note: '' }]
+})
+await tickOnce()
+tree = await settle(createElement(Panel, {}))
+clickable(tree, '现在刷新').props.onClick()
+tree = await settle(createElement(Panel, {}))
+check('新加的两版表格进时间轴了', allText(tree).includes('衡算表改了一个数'))
+
+roundRow('衡算表改了一个数').props.onClick()
+tree = await settle(createElement(Panel, {}))
+check('xlsx 那一轮的【和上一版比】不是灰的', clickable(tree, '和上一版比')?.props.disabled === false, String(clickable(tree, '和上一版比')?.props.title))
+clickable(tree, '和上一版比').props.onClick()
+tree = await settle(createElement(Panel, {}))
+check('表格也去读两版正文', textCalls().some((url) => url.includes('20260911T2210-%E8%A1%A1%E7%AE%97%E8%A1%A8')), JSON.stringify(textCalls().slice(-2)))
+check('表格里连续没改的开头折成一行（不把屏幕撑满）', allText(tree).includes('中间 3 段没有变化'), allText(tree).slice(0, 500))
+check('表格的工作表标记在改动附近看得见', allText(tree).includes('设备'), allText(tree).slice(0, 500))
+check('表格一行一块、格子用竖线连起来', allText(tree).includes('项目 | 数值'), allText(tree).slice(0, 500))
+check('表格只改的那个格子变红了/变绿了', allText(tree).includes('苯乙烯 | 0 | 0.58') && allText(tree).includes('苯乙烯 | 0 | 0.61'))
+const cellMarks = findAll(tree, (node) => node.host === 'span' && typeof node.props.style?.background === 'string' && node.props.style.background.includes('rgba'))
+check('变了的那个数自己跳出来（不是整行糊上去）', cellMarks.some((node) => node.children?.[0]?.text === '0.58') && cellMarks.some((node) => node.children?.[0]?.text === '0.61'), JSON.stringify(cellMarks.map((n) => n.children?.[0]?.text)))
+check('没变的格子不高亮', !cellMarks.some((node) => node.children?.[0]?.text === '苯乙烯'))
+check('表格的统计也按段数算', allText(tree).includes('新增 2 段 · 删掉 2 段 · 相同 5 段'), allText(tree).slice(0, 400))
+clickable(tree, '← 回到时间轴').props.onClick()
+tree = await settle(createElement(Panel, {}))
+
+// 读不出来的表格：如实说
+roundRow('这一版的快照读不出来').props.onClick()
+tree = await settle(createElement(Panel, {}))
 
 /* ==================== 主题探测 ==================== */
 
