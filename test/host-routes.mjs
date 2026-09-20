@@ -413,44 +413,62 @@ function crc32(buffer) {
 }
 
 /**
- * 造一个**真的** docx：中央目录 + 一个压缩过的 word/document.xml。
- * 用真 deflate 而不是假数据，否则测的就不是自己那条解压路。
+ * 造一个**真的** zip：中央目录 + 若干条目，用真 deflate 而不是假数据，
+ * 否则测的就不是自己那条解压路。
+ *
+ * @param entries - `{ name, text }` 数组，按顺序写进去。
+ * @param options.stored - true 时不压缩（测 stored 那条路）。
+ * @returns zip 的 Buffer。
  */
-function makeDocx(xml, { stored = false } = {}) {
-	const name = Buffer.from('word/document.xml', 'utf8')
-	const body = Buffer.from(xml, 'utf8')
-	const payload = stored ? body : deflateRawSync(body)
+function makeZip(entries, { stored = false } = {}) {
 	const method = stored ? 0 : 8
-	const local = Buffer.alloc(30)
-	local.writeUInt32LE(0x04034b50, 0)
-	local.writeUInt16LE(20, 4)
-	local.writeUInt16LE(method, 8)
-	local.writeUInt32LE(crc32(body), 14)
-	local.writeUInt32LE(payload.length, 18)
-	local.writeUInt32LE(body.length, 22)
-	local.writeUInt16LE(name.length, 26)
-	const localBlock = Buffer.concat([local, name, payload])
-	const central = Buffer.alloc(46)
-	central.writeUInt32LE(0x02014b50, 0)
-	central.writeUInt16LE(20, 4)
-	central.writeUInt16LE(20, 6)
-	central.writeUInt16LE(method, 10)
-	central.writeUInt32LE(crc32(body), 16)
-	central.writeUInt32LE(payload.length, 20)
-	central.writeUInt32LE(body.length, 24)
-	central.writeUInt16LE(name.length, 28)
-	central.writeUInt32LE(0, 42)
-	const centralBlock = Buffer.concat([central, name])
+	const locals = []
+	const centrals = []
+	let localOffset = 0
+	for (const entry of entries) {
+		const name = Buffer.from(entry.name, 'utf8')
+		const body = Buffer.from(entry.text, 'utf8')
+		const payload = stored ? body : deflateRawSync(body)
+		const local = Buffer.alloc(30)
+		local.writeUInt32LE(0x04034b50, 0)
+		local.writeUInt16LE(20, 4)
+		local.writeUInt16LE(method, 8)
+		local.writeUInt32LE(crc32(body), 14)
+		local.writeUInt32LE(payload.length, 18)
+		local.writeUInt32LE(body.length, 22)
+		local.writeUInt16LE(name.length, 26)
+		const localBlock = Buffer.concat([local, name, payload])
+		locals.push(localBlock)
+		const central = Buffer.alloc(46)
+		central.writeUInt32LE(0x02014b50, 0)
+		central.writeUInt16LE(20, 4)
+		central.writeUInt16LE(20, 6)
+		central.writeUInt16LE(method, 10)
+		central.writeUInt32LE(crc32(body), 16)
+		central.writeUInt32LE(payload.length, 20)
+		central.writeUInt32LE(body.length, 24)
+		central.writeUInt16LE(name.length, 28)
+		central.writeUInt32LE(0, 42)
+		central.writeUInt32LE(localOffset, 42)
+		centrals.push(Buffer.concat([central, name]))
+		localOffset += localBlock.length
+	}
+	const centralBlock = Buffer.concat(centrals)
 	const eocd = Buffer.alloc(22)
 	eocd.writeUInt32LE(0x06054b50, 0)
-	eocd.writeUInt16LE(1, 8)
-	eocd.writeUInt16LE(1, 10)
+	eocd.writeUInt16LE(entries.length, 8)
+	eocd.writeUInt16LE(entries.length, 10)
 	eocd.writeUInt32LE(centralBlock.length, 12)
-	eocd.writeUInt32LE(localBlock.length, 16)
-	return Buffer.concat([localBlock, centralBlock, eocd])
+	eocd.writeUInt32LE(Buffer.concat(locals).length, 16)
+	return Buffer.concat([...locals, centralBlock, eocd])
 }
 
-const { unzipEntry, docxBlocks, blocksFromText, decodeEntities, headingLevel } = host.__internals
+/** 造一个**真的** docx：zip + 一个压缩过的 word/document.xml。 */
+function makeDocx(xml, options) {
+	return makeZip([{ name: 'word/document.xml', text: xml }], options)
+}
+
+const { unzipEntry, docxBlocks, xlsxBlocks, columnOf, blocksFromText, decodeEntities, headingLevel } = host.__internals
 
 const SAMPLE_XML = `<?xml version="1.0" encoding="UTF-8"?>
 <w:document xmlns:w="x"><w:body>
@@ -469,6 +487,16 @@ check('zip 能解出 deflate 压缩的条目', String(unzipEntry(makeDocx(SAMPLE
 check('zip 也能解出不压缩（stored）的条目', String(unzipEntry(makeDocx(SAMPLE_XML, { stored: true }), 'word/document.xml')).includes('物料衡算'))
 check('zip 里没有的条目返回 null', unzipEntry(makeDocx(SAMPLE_XML), 'word/nope.xml') === null)
 check('不是 zip 的 docx 返回 null（不当成崩溃）', unzipEntry(Buffer.from('这不是 zip', 'utf8'), 'word/document.xml') === null)
+
+// 多条目时按名字取对那一条：xlsx 里同一个包要取四个 xml，取错了后面全歪
+const many = makeZip([
+	{ name: '[Content_Types].xml', text: '类型清单' },
+	{ name: 'xl/workbook.xml', text: '工作簿' },
+	{ name: 'xl/worksheets/sheet1.xml', text: '第一张表' },
+	{ name: 'xl/worksheets/sheet2.xml', text: '第二张表' }
+])
+check('多条目 zip 按名字取对每一条', [unzipEntry(many, '[Content_Types].xml'), unzipEntry(many, 'xl/workbook.xml'), unzipEntry(many, 'xl/worksheets/sheet1.xml'), unzipEntry(many, 'xl/worksheets/sheet2.xml')].map(String).join(',') === '类型清单,工作簿,第一张表,第二张表', [unzipEntry(many, 'xl/workbook.xml'), unzipEntry(many, 'xl/worksheets/sheet1.xml')].map(String).join(','))
+check('多条目 zip 里没写的条目也返回 null', unzipEntry(many, 'xl/sharedStrings.xml') === null)
 
 const sample = docxBlocks(unzipEntry(makeDocx(SAMPLE_XML), 'word/document.xml').toString('utf8'))
 check('docx 段落按文档顺序解出来', sample.map((b) => b.text)[0] === '第三章 物料衡算')
@@ -489,6 +517,83 @@ check('坏实体原样留着（不猜）', decodeEntities('&notanentity;') === '
 const mdBlocks = blocksFromText('# 标题\n\n正文一行\n- 列表项\n| a | b |\n', '.md')
 check('md 的标题/列表/表格行都认', mdBlocks[0].kind === 'h1' && mdBlocks.some((b) => b.kind === 'li') && mdBlocks.some((b) => b.kind === 'row'))
 check('md 的空行不占一段', blocksFromText('a\n\n\n\nb\n', '.md').length === 2)
+
+/* ---------- xlsx：表格的单位是行，一块就是一行 ---------- */
+
+/** 单元格引用里的字母 → 列号。 */
+check('列号从单元格引用里认', columnOf('A1') === 0 && columnOf('C7') === 2 && columnOf('AA1') === 26 && columnOf('') === 0)
+
+/**
+ * 造一个**真的** xlsx：workbook + rels + 共享字符串表 + 表 xml。
+ *
+ * @param sheets - `{ name, rows, shared? }` 数组。`rows` 是二维数组，
+ *                 字符串默认走内联字符串；`shared: true` 时走共享字符串表。
+ * @returns xlsx 的 Buffer。
+ */
+function makeXlsx(sheets) {
+	const shared = []
+	const sheetXml = (sheet) => {
+		const rows = []
+		for (const [r, cells] of (sheet.rows ?? []).entries()) {
+			const parts = []
+			for (const [c, value] of cells.entries()) {
+				const ref = `${String.fromCharCode(65 + c)}${r + 1}`
+				if (value === '' || value === null) continue
+				if (sheet.shared === true && typeof value === 'string') {
+					if (!shared.includes(value)) shared.push(value)
+					parts.push(`<c r="${ref}" t="s"><v>${shared.indexOf(value)}</v></c>`)
+				} else if (typeof value === 'number') parts.push(`<c r="${ref}"><v>${value}</v></c>`)
+				else if (value.raw !== undefined) parts.push(`<c r="${ref}"${value.t === undefined ? '' : ` t="${value.t}"`}>${value.raw}</c>`)
+				else parts.push(`<c r="${ref}" t="inlineStr"><is><t>${value.replace(/&/g, '&amp;').replace(/</g, '&lt;')}</t></is></c>`)
+			}
+			rows.push(`<row r="${r + 1}">${parts.join('')}</row>`)
+		}
+		return `<?xml version="1.0"?><worksheet>${rows.join('')}</worksheet>`
+	}
+	// 先把表 xml 都生成出来：共享字符串表是在这一步攒起来的，顺序反了就永远是空的。
+	const sheetFiles = sheets.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, text: sheetXml(s) }))
+	const names = sheets.map((s) => s.name)
+	return makeZip([
+		{ name: '[Content_Types].xml', text: '<?xml version="1.0"?><Types/>' },
+		{ name: 'xl/workbook.xml', text: `<?xml version="1.0"?><workbook xmlns:r="rel"><sheets>${names.map((n, i) => `<sheet name="${n}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('')}</sheets></workbook>` },
+		{ name: 'xl/_rels/workbook.xml.rels', text: `<?xml version="1.0"?><Relationships>${names.map((_, i) => `<Relationship Id="rId${i + 1}" Type="worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')}</Relationships>` },
+		{ name: 'xl/sharedStrings.xml', text: `<?xml version="1.0"?><sst>${shared.map((s) => `<si><t>${s.replace(/&/g, '&amp;')}</t></si>`).join('')}</sst>` },
+		...sheetFiles
+	])
+}
+
+const XLSX_SHEETS = [
+	{ name: '物料衡算', rows: [['组分', '进料', '出料'], ['乙苯', 1.2, 0.44], ['苯乙烯', 0, 0.58]] },
+	{ name: '设备', rows: [['项目', '数值'], ['塔径', 1.2]] }
+]
+const xlsxBlocksOf = (sheets) => xlsxBlocks(makeXlsx(sheets))
+
+check('xlsx 每个表先落一个标记块', xlsxBlocksOf(XLSX_SHEETS).filter((b) => b.kind === 'sheet').map((b) => b.text).join(',') === '物料衡算,设备', JSON.stringify(xlsxBlocksOf(XLSX_SHEETS).slice(0, 3)))
+check('xlsx 一行一块，格子用竖线连起来', xlsxBlocksOf(XLSX_SHEETS).some((b) => b.kind === 'row' && b.text === '乙苯 | 1.2 | 0.44'), JSON.stringify(xlsxBlocksOf(XLSX_SHEETS)[2]))
+check('xlsx 数字原样取（不当成日期猜）', xlsxBlocksOf(XLSX_SHEETS).some((b) => b.text === '塔径 | 1.2'))
+check('xlsx 内联字符串解出来', xlsxBlocksOf(XLSX_SHEETS).some((b) => b.text === '组分 | 进料 | 出料'))
+const sharedXlsx = xlsxBlocksOf([{ name: '表一', shared: true, rows: [['共享串', '数值'], ['第二格', 3]] }])
+check('xlsx 共享字符串表也用得上', sharedXlsx.some((b) => b.kind === 'row' && b.text === '共享串 | 数值'), JSON.stringify(sharedXlsx))
+check('xlsx 布尔与错误码如实取', xlsxBlocksOf([{ name: 's', rows: [[{ t: 'b', raw: '<v>1</v>' }, { t: 'e', raw: '<v>#DIV/0!</v>' }]] }]).some((b) => b.kind === 'row' && b.text === 'TRUE | #DIV/0!'))
+check('xlsx 公式本身不当正文（只取算出来的值）', xlsxBlocksOf([{ name: 's', rows: [[{ t: 'str', raw: '<f>SUM(A1:A9)</f><v>123</v>' }]] }]).some((b) => b.text === '123'))
+check('xlsx 没算完的公式那一行不留空块（留着只是噪声）', xlsxBlocksOf([{ name: 's', rows: [[{ t: 'str', raw: '<f>SUM(A1:A9)</f>' }]] }]).filter((b) => b.kind === 'row').length === 0)
+check('xlsx 没算完的公式在同行里留成空段（列不错位）', xlsxBlocksOf([{ name: 's', rows: [['甲', { t: 'str', raw: '<f>SUM(A1:A9)</f>' }]] }]).some((b) => b.kind === 'row' && b.text === '甲 | '))
+check('xlsx 空行不进对比（比出来只是噪声）', xlsxBlocksOf([{ name: 's', rows: [['a'], [], ['b']] }]).filter((b) => b.kind === 'row').length === 2)
+check('xlsx 中间空格子用空段占住（列不错位）', xlsxBlocksOf([{ name: 's', rows: [['首', '', '末']] }]).some((b) => b.text === '首 |  | 末'))
+check('xlsx 实体被解码', xlsxBlocksOf([{ name: 's', rows: [['<甲> & 乙']] }]).some((b) => b.text === '<甲> & 乙'))
+check('xlsx 空表也留一个标记块', xlsxBlocksOf([{ name: '空表', rows: [] }]).length === 1 && xlsxBlocksOf([{ name: '空表', rows: [] }])[0].kind === 'sheet')
+check('xlsx 没有名也排得下去', xlsxBlocksOf([{ name: '', rows: [['x']] }]).some((b) => b.kind === 'sheet'))
+check('不是 zip 的 xlsx 返回 null（不当崩溃）', xlsxBlocks(Buffer.from('这不是 zip', 'utf8')) === null)
+check('是 zip 但没有 workbook.xml 也返回 null', xlsxBlocks(makeZip([{ name: 'xl/worksheets/sheet1.xml', text: '<worksheet/>' }])) === null)
+check('rels 缺失时按默认表名找（不当崩溃）', xlsxBlocks(makeZip([
+	{ name: 'xl/workbook.xml', text: '<workbook><sheets><sheet name="s" sheetId="1" r:id="rId1"/></sheets></workbook>' },
+	{ name: 'xl/worksheets/sheet1.xml', text: '<worksheet><row r="1"><c r="A1" t="inlineStr"><is><t>兜底</t></is></c></row></worksheet>' }
+])).some((b) => b.kind === 'row' && b.text === '兜底'))
+check('rels 的 Target 写成 /xl/… 也认', xlsxBlocks(makeZip([
+	{ name: 'xl/workbook.xml', text: '<workbook><sheets><sheet name="s" sheetId="1" r:id="rId1"/></sheets></workbook>' },
+	{ name: 'xl/_rels/workbook.xml.rels', text: '<Relationships><Relationship Id="rId1" Type="worksheet" Target="/xl/worksheets/sheet9.xml"/></Relationships>' },
+	{ name: 'xl/worksheets/sheet9.xml', text: '<worksheet><row r="1"><c r="A1" t="inlineStr"><is><t>第九张</t></is></c></row></worksheet>' }
+])).some((b) => b.kind === 'row' && b.text === '第九张'))
 
 const textRoot = await mkdtemp(join(tmpdir(), 'dsh-workbench-text-'))
 const textLine = join(textRoot, '毕业论文')
@@ -556,6 +661,38 @@ check('超长文档被截断且如实标记', result.body.truncated === true && 
 await writeFile(join(textRoot, '论文全文.docx'), makeDocx(SAMPLE_XML))
 result = await call(route, `/api/dsh-workbench/text?dir=${encodeURIComponent(textRoot)}&line=.&file=${encodeURIComponent('论文全文.docx')}`)
 check('/text 支持 line=.（单产线项目放根目录）', result.status === 200 && result.body.ok === true, String(result.status))
+
+/* ---------- /text 读 xlsx ---------- */
+
+const xlsxOld = makeXlsx([
+	{ name: '物料衡算', rows: [['组分', '进料', '出料'], ['乙苯', 1.2, 0.44], ['苯乙烯', 0, 0.58]] },
+	{ name: '设备', rows: [['项目', '数值'], ['塔径', 1.2]] }
+])
+const xlsxNew = makeXlsx([
+	{ name: '物料衡算', rows: [['组分', '进料', '出料'], ['乙苯', 1.2, 0.44], ['苯乙烯', 0, 0.61]] },
+	{ name: '设备', rows: [['项目', '数值'], ['塔径', 1.4]] }
+])
+await writeFile(join(textLine, '.versions', '20260911T2210-衡算表.xlsx'), xlsxOld)
+await writeFile(join(textLine, '.versions', '20260912T2100-衡算表.xlsx'), xlsxNew)
+await writeFile(join(textLine, '假的.xlsx'), '这只是一个文本文件，不是 zip', 'utf8')
+await writeFile(join(textLine, '老的.xls'), '老式二进制表格', 'utf8')
+
+result = await textOf('.versions/20260911T2210-衡算表.xlsx')
+check('/text 读 xlsx 返回块', result.status === 200 && result.body.ok === true && result.body.blocks.length > 4, JSON.stringify(result.body).slice(0, 160))
+check('/text 读 xlsx 时 kind 是 xlsx', result.body.kind === 'xlsx')
+check('/text 读 xlsx 时每个表有标记块', result.body.blocks.filter((b) => b.kind === 'sheet').length === 2, JSON.stringify(result.body.blocks.filter((b) => b.kind === 'sheet')))
+check('/text 读 xlsx 时一行一块', result.body.blocks.some((b) => b.kind === 'row' && b.text === '乙苯 | 1.2 | 0.44'), JSON.stringify(result.body.blocks))
+
+// 两版 xlsx 的差异要落在「那一格」上
+const oldBlocks = (await textOf('.versions/20260911T2210-衡算表.xlsx')).body.blocks
+const newBlocks = (await textOf('.versions/20260912T2100-衡算表.xlsx')).body.blocks
+check('两版 xlsx 读出来行数一致（才好比）', oldBlocks.length === newBlocks.length, `${oldBlocks.length} vs ${newBlocks.length}`)
+check('两版 xlsx 只有那一格不同', oldBlocks.filter((b, i) => b.text !== newBlocks[i].text).length === 2, JSON.stringify(oldBlocks.filter((b, i) => b.text !== newBlocks[i].text)))
+
+result = await textOf('老的.xls')
+check('/text 老的 .xls 不在白名单（另一种二进制容器，解不了）', result.status === 400 && String(result.body.error).includes('xls'), String(result.status))
+result = await textOf('假的.xlsx')
+check('不是 zip 的 xlsx 如实说读不出，不当 500', result.status === 200 && result.body.ok === false && String(result.body.error).includes('workbook.xml'), JSON.stringify(result.body).slice(0, 160))
 
 await rm(textRoot, { recursive: true, force: true })
 
