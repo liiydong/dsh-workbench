@@ -125,10 +125,23 @@ check('注册了一条 prefix 路由', ctx.registrations.length === 1 && route.k
 
 /* ==================== /skills ==================== */
 
+// 本机技能目录换成临时目录。技能库现在会去磁盘补上注册表给不出的那些
+// （没有会话上下文的 HTTP 路由里，注册表只给得出随包发布的几个），
+// 不换的话「有几个技能」就会跟着跑测试这台机器装了什么变。
+const skillRoot = await mkdtemp(join(tmpdir(), 'dsh-workbench-skills-'))
+await mkdir(join(skillRoot, 'my-own-skill'), { recursive: true })
+await writeFile(
+	join(skillRoot, 'my-own-skill', 'SKILL.md'),
+	'---\nname: my-own-skill\ndescription: 只放在本机目录里的技能\n---\n\n# 我的技能\n\n正文在这里。\n',
+	'utf8'
+)
+host.__internals.setSkillRoots(() => [{ dir: skillRoot, source: 'user-agents' }])
+
 let result = await call(route, '/api/dsh-workbench/skills')
 check('/skills 返回 200', result.status === 200, String(result.status))
 check('/skills 走注册表快照（complete=true）', result.body.complete === true)
-check('/skills 列出全部技能', result.body.skills?.length === 2)
+check('/skills 合并注册表与本机技能目录', result.body.skills?.length === 3, `实际 ${result.body.skills?.length}`)
+check('/skills 补上只在本机目录里的技能', result.body.skills.some((s) => s.name === 'my-own-skill' && s.source === 'user-agents'))
 check('/skills 只带叶子字段（无宿主对象）', result.body.skills.every((s) => typeof s.name === 'string' && typeof s.path === 'string' && s.invocation === undefined))
 check('/skills 提取 resourceBase.path', result.body.skills[0].path.endsWith('doc-iteration-control'))
 check('/skills 对 opaque 资源不留空串错误', result.body.skills[1].path === '内置')
@@ -139,8 +152,13 @@ check('响应是 JSON', String(result.headers['content-type']).includes('applica
 result = await call(route, '/api/dsh-workbench/skill?name=doc-iteration-control')
 check('/skill 返回全文', result.status === 200 && result.body.content.includes('Markdown 是唯一的源'))
 
+result = await call(route, '/api/dsh-workbench/skill?name=my-own-skill')
+check('/skill 读得出本机技能目录里的全文', result.status === 200 && result.body.content.includes('正文在这里') && result.body.source === 'user-agents', JSON.stringify(result.body).slice(0, 160))
+check('/skill 从磁盘读的那份没被塞进宿主对象', result.body.provider === 'file' && typeof result.body.path === 'string')
+
 result = await call(route, '/api/dsh-workbench/skill?name=nope')
 check('/skill 找不到时 404', result.status === 404, String(result.status))
+check('/skill 拒绝带路径成分的名字', (await call(route, '/api/dsh-workbench/skill?name=..%2F..%2Fetc')).status === 404)
 
 result = await call(route, '/api/dsh-workbench/skill')
 check('/skill 缺参数时 400', result.status === 400, String(result.status))
@@ -740,8 +758,9 @@ check('非 GET 405', result.status === 405, String(result.status))
 const bare = { registrations: [], webServer: { register(r) { bare.registrations.push(r); return () => {} } }, get: () => undefined }
 const host2 = await import(`${HOST}?bare=1`)
 host2.apply(bare)
+host2.__internals.setSkillRoots(() => [])
 const result2 = await call(bare.registrations[0], '/api/dsh-workbench/skills')
-check('技能注册表缺席时返回可读错误而非崩溃', result2.status === 200 && typeof result2.body.error === 'string')
+check('技能注册表缺席时不崩，并如实说目录不完整', result2.status === 200 && result2.body.complete === false && Array.isArray(result2.body.skills))
 const result3 = await call(bare.registrations[0], '/api/dsh-workbench/workspaces')
 check('工作区注册表缺席时返回空列表', result3.status === 200 && Array.isArray(result3.body.workspaces))
 

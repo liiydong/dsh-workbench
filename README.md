@@ -157,9 +157,12 @@ AI 改 .md  →  跑脚本生成 docx/pdf/xlsx  →  写 produced.jsonl + 存快
 
 ### 技能库
 
-- 列出**模型实际会加载的那份技能目录**（走核心 `ctx.skills` 注册表，不另建索引，不会漂移）
-- 按技能名 / 描述 / 触发词搜索，按来源过滤（用户 · `.agents`、内置、项目层…）
-- 点任意一条，右侧显示它的 `SKILL.md` 全文与来源路径
+- **先问核心 `ctx.skills` 注册表，再拿本机技能目录补缺**：注册表里有谁就用谁的元数据；
+  它给不出来的，直接扫 `~/.agents/skills`、`~/.dsh/skills` 和项目里的 `.agents/skills`（只扫一层、只认 `SKILL.md`）。
+  为什么要补这一手：`snapshot()` 跑在**没有会话上下文**的 HTTP 路由里，只给得出随包发布的那几个技能，
+  用户自己装的一个都看不到——那份「模型实际会加载的目录」于是反而是残缺的；
+- 按技能名 / 描述 / 触发词搜索，按来源过滤（用户 · `.agents`、用户 · `.dsh`、内置、项目层…）
+- 点任意一条，右侧显示它的 `SKILL.md` 全文与来源路径（注册表问不到全文时，直接读文件）
 
 ### 文档
 
@@ -216,8 +219,8 @@ dsh plugin --profile web remove dsh-workbench
 
 | 路由 | 方法 | 数据来源 |
 |---|---|---|
-| `/skills?cwd=` | GET | `ctx.skills.snapshot()` —— 核心技能注册表 |
-| `/skill?name=&cwd=` | GET | `ctx.skills.get()` —— 单个技能全文 |
+| `/skills?cwd=` | GET | `ctx.skills.snapshot()` —— 核心技能注册表，再拿本机技能目录补缺 |
+| `/skill?name=&cwd=` | GET | `ctx.skills.get()` —— 单个技能全文；注册表问不到就去本机目录读 `SKILL.md` |
 | `/docs?dir=` | GET | `node:fs/promises` 扫目录 + 源产物配对 |
 | `/workspaces` | GET | `ctx.workspaceRegistry.list()` —— 目录下拉 |
 | `/history?dir=` | GET | 读各产线的 `.versions/produced.jsonl` + `decisions.jsonl` |
@@ -262,7 +265,7 @@ dsh-workbench/
 │   └── client.js         # 浏览器半侧：侧栏图标 + 三个页签（手写 __ModuleLoader__ bundle，无构建步骤）
 └── test/
     ├── smoke.mjs         # 组件树自检：桩 __ModuleLoader__ + 迷你 React，251 项
-    └── host-routes.mjs   # 路由自检：假 req/res + 真实文件系统 + 真写审批与快照，169 项
+    └── host-routes.mjs   # 路由自检：假 req/res + 真实文件系统 + 真写审批与快照，173 项
 ```
 
 ```sh
@@ -301,7 +304,7 @@ node test/host-routes.mjs          # 可选参数：/docs 要扫描的目录
 ## 关于这个仓库：作者与 AI 披露
 
 - 本仓库的代码由 **DeepSeek Harness 中的 AI Agent 生成**，由仓库所有者审阅、验证并发布；
-  每次提交的验证方式记录在 `CHANGELOG.md`（不需要浏览器的两套自检，共 420 项；测试全部自建临时目录，
+  每次提交的验证方式记录在 `CHANGELOG.md`（不需要浏览器的两套自检，共 424 项；测试全部自建临时目录，
   不依赖仓库里的任何示例数据）。
 - **仓库里没有示例项目**：曾经的演示数据（3 条产线 27 轮假记录）已经删掉——它是给「先看看长什么样」用的，
   真实用法一上来就是自己的目录。仓库里也不含本机路径、姓名或邮箱，提交作者统一使用 GitHub 的 noreply 邮箱。
