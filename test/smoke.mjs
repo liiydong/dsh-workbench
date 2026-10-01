@@ -282,7 +282,7 @@ const DOCS = {
 const requests = []
 /** 审批状态存在桩里：POST /decide 之后再 GET /history 应该看得到变化。 */
 const decisions = new Map()
-const DEMO_DIR = 'C:\\demo\\thesis-workbench'
+const SAMPLE_DIR = 'C:\\demo\\thesis-workbench'
 
 /** 桩的「一版正文」：旧版。 */
 const TEXT_OLD = [
@@ -505,7 +505,7 @@ function scanBody() {
 		byLine.set(entry.line, bucket)
 	}
 	return {
-		dir: DEMO_DIR,
+		dir: SAMPLE_DIR,
 		exists: true,
 		windowHours: 48,
 		provenance: { available: true, sessions: 2, events: 9 },
@@ -531,7 +531,7 @@ function historyBody() {
 	for (const line of list) line.rounds.sort((a, b) => b.at - a.at)
 	const totals = { rounds: ROUND_DEFS.length + extraRounds.length, pending: 0, approved: 0, rejected: 0, lines: list.length }
 	for (const line of list) for (const key of ['pending', 'approved', 'rejected']) totals[key] += line.counts[key]
-	return { dir: DEMO_DIR, exists: true, truncated: false, totals, lines: list }
+	return { dir: SAMPLE_DIR, exists: true, truncated: false, totals, lines: list }
 }
 
 async function fakeFetch(url, options) {	const method = options?.method ?? 'GET'
@@ -567,8 +567,7 @@ async function fakeFetch(url, options) {	const method = options?.method ?? 'GET'
 		return { status: 200, async text() { return JSON.stringify({ ok: true, id: 'adopted-1', snapshot: `.versions/20260919T2100-${payload.file}`, bytes: 38000 }) } }
 	}
 	let body
-	if (url.includes('/demo')) body = { dir: DEMO_DIR, exists: true }
-	else if (url.includes('/history?')) body = historyBody()
+	if (url.includes('/history?')) body = historyBody()
 	else if (url.includes('/skills')) body = { complete: true, cwd: '', skills: SKILLS }
 	else if (url.includes('/skill?')) body = { name: 'doc-iteration-control', content: '# 文档迭代控制\n\nMarkdown 是唯一的源。', path: 'C:\\Users\\me\\.agents\\skills\\doc-iteration-control\\SKILL.md' }
 	else if (url.includes('/workspaces')) body = { workspaces: [{ id: 'w1', path: 'D:\\work\\my-project', title: 'my-project' }] }
@@ -677,7 +676,7 @@ check('页签声明单实例（不重复开）', tabRegistrations[0]?.single ===
 check('页签图标能渲染出 svg', typeof tabRegistrations[0]?.icon === 'function' && expand(createElement(tabRegistrations[0].icon, { size: 16 }), 'tabicon').host === 'svg')
 check('页签组件就是工作台面板', tabRegistrations[0]?.component === client.__internals.WorkbenchPanel)
 check('better-sidebar 声明了 badge 能力时报上「待我审」', typeof tabRegistrations[0]?.badge === 'function')
-client.__internals.__debugReportPending(7, DEMO_DIR)
+client.__internals.__debugReportPending(7, SAMPLE_DIR)
 check('页签角标跟着面板的数走', tabRegistrations[0]?.badge() === 7, String(tabRegistrations[0]?.badge?.()))
 client.__internals.__debugReportPending(0, '')
 check('没有待审时页签角标返回 null（不画 0）', tabRegistrations[0]?.badge() === null, String(tabRegistrations[0]?.badge?.()))
@@ -796,7 +795,7 @@ check('图标自己也排了一个「待我审」的轮询', iconTimers >= 1, `�
 const Panel = mainEntry.component
 let tree = await settle(createElement(Panel, {}))
 
-check('默认打开迭代页', allText(tree).includes('载入演示'))
+check('默认打开迭代页', allText(tree).includes('未入记录') && allText(tree).includes('项目目录'))
 check('提示说明工作模式', allText(tree).includes('你审没审') || allText(tree).includes('AI 改 md'))
 
 /* ==================== 返回对话 ==================== */
@@ -850,7 +849,7 @@ check('退一步：技能全文收起来了', !allText(tree).includes('Markdown 
 check('退一步后「下一步」亮了', stepBy('下一步')?.props.disabled === false)
 stepBy('上一步').props.onClick()
 tree = await settle(createElement(Panel, {}))
-check('再退一步：回到迭代页', allText(tree).includes('载入演示'))
+check('再退一步：回到迭代页', allText(tree).includes('未入记录'))
 check('退到底后「上一步」又灰了', stepBy('上一步')?.props.disabled === true)
 
 // 进两步：回到「技能库 + 那个技能开着」
@@ -871,16 +870,36 @@ tree = await settle(createElement(Panel, {}))
 check('走了新的一步后「下一步」被清掉', stepBy('下一步')?.props.disabled === true)
 check('而「上一步」还能继续退', stepBy('上一步')?.props.disabled === false)
 
-const demoButton = clickable(tree, '载入演示')
-check('找到「载入演示」按钮', demoButton !== undefined)
-demoButton.props.onClick()
+// 填目录 → 读取：真实项目就是这么进来的（原来那枚「载入演示」已经拿掉）
+const dirInput = findAll(tree, (node) => node.host === 'input' && String(node.props.placeholder).includes('项目目录'))[0]
+check('迭代页有项目目录输入框', dirInput !== undefined)
+dirInput.props.onChange({ target: { value: SAMPLE_DIR } })
 tree = await settle(createElement(Panel, {}))
-check('取了演示目录', requests.some((url) => url.includes('/demo')))
+clickable(tree, '读取').props.onClick()
+tree = await settle(createElement(Panel, {}))
 check('按目录拉了历史', requests.some((url) => url.includes('/history?dir=')))
+check('没有「载入演示」这枚按钮了', clickable(tree, '载入演示') === undefined)
+
+// 目录下拉：已登记的工作区 + 最近打开过的目录 —— 演示入口拿掉之后，这是最省事的入口
+const dirChooser = findAll(tree, (node) => node.host === 'select' && node.props['data-workbench-role'] === 'dir-chooser')[0]
+check('顶栏有「最近用过 / 工作区」下拉', dirChooser !== undefined)
+check('下拉里列着已登记的工作区', allText(dirChooser).includes('my-project'))
+dirChooser.props.onChange({ target: { value: 'D:\\work\\my-project' } })
+tree = await settle(createElement(Panel, {}))
+check('选一个工作区就切过去读它的历史', requests.some((url) => url.includes(encodeURIComponent('D:\\work\\my-project'))))
+
+// 切回来：后面几段（角标报的目录、自动检测）都按着这个目录在数
+const dirInputAgain = findAll(tree, (node) => node.host === 'input' && String(node.props.placeholder).includes('项目目录'))[0]
+dirInputAgain.props.onChange({ target: { value: SAMPLE_DIR } })
+tree = await settle(createElement(Panel, {}))
+clickable(tree, '读取').props.onClick()
+tree = await settle(createElement(Panel, {}))
+check('切回原目录继续', requests.filter((url) => url.includes(encodeURIComponent(SAMPLE_DIR))).length >= 2)
 check('渲染出产线分组', allText(tree).includes('毕业论文') && allText(tree).includes('Aspen流程模拟'))
 check('渲染出轮次摘要', allText(tree).includes('修正乙苯转化率'))
 check('渲染出按天小节', allText(tree).includes('2026-09-11'))
 check('显示审批状态徽章', allText(tree).includes('待我审'))
+
 
 // 悬停 → 摘要卡
 const hoverRow = findAll(tree, (node) => node.host === 'div' && allText(node).includes('修正乙苯转化率') && typeof node.props.onMouseEnter === 'function')[0]
@@ -931,7 +950,7 @@ check('该轮变成「已通过」', allText(tree).includes('已通过'))
 // 角标的轮询跟着图标一起排上（上面已渲染过图标），所以这里一共两个定时器：
 // 一个是「待我审」角标，一个是本页的「目录有没有新东西」。
 check('目录行有自动档位按钮（默认 10 秒）', clickable(tree, '自动：10 秒') !== undefined)
-check('自动检测已排上定时器（角标那个 + 这一个）', timers.size === iconTimers + 1, `实际 ${timers.size}`)
+check('自动检测已排上定时器（角标那个 + 这一个）', timers.size === iconTimers + 1, `实际 ${timers.size}，图标快照 ${iconTimers}`)
 
 // 服务端多了一条记录 → 探一拍只该给提示，不该自己跳屏
 extraRounds.push({
@@ -1000,7 +1019,7 @@ tree = await settle(createElement(Panel, {}))
 clickable(tree, '自动：1 分钟').props.onClick()
 tree = await settle(createElement(Panel, {}))
 check('一直点可以关掉自动', clickable(tree, '自动：关') !== undefined)
-check('关掉之后本页不再排定时器（只剩角标那个）', timers.size === iconTimers, `实际 ${timers.size}`)
+check('关掉之后本页不再排定时器（只剩角标那个）', timers.size === iconTimers, `实际 ${timers.size}，图标快照 ${iconTimers}`)
 
 /* ==================== 还没进记录的产物（/scan + /adopt） ==================== */
 
@@ -1069,7 +1088,7 @@ check('角标上的数字就是面板算出的待审轮数', badgeOf(bothTree)?.
 check('角标悬停说明写清是哪个目录', String(badgeOf(bothTree)?.props?.title).includes('待你审') && String(badgeOf(bothTree)?.props?.title).includes('thesis-workbench'), String(badgeOf(bothTree)?.props?.title))
 
 // 数字太大时收成 99+，不然角标会撑到图标外面去
-client.__internals.__debugReportPending(137, DEMO_DIR)
+client.__internals.__debugReportPending(137, SAMPLE_DIR)
 const manyTree = await settle(createElement(IconHarness, {}))
 check('数字超过 99 收成 99+', badgeOf(manyTree)?.props?.['data-workbench-badge'] === '137' && allText(manyTree).includes('99+'), allText(manyTree))
 
@@ -1081,6 +1100,21 @@ check('没有待审时角标整个不渲染（不会画一个 0）', badgeOf(cle
 tree = await settle(createElement(WorkbenchPanelStub, {}))
 clickable(tree, '迭代').props.onClick()
 tree = await settle(createElement(WorkbenchPanelStub, {}))
+
+// 「迭代流程」：本机装了这类技能时，迭代页把它直接摆出来，一点跳到技能库看全文。
+// 位置特意排在数定时器的断言之后 —— 组件树自检里换页签会让实例重建，
+// 那一下会把已排的定时器留在池子里（真实 React 会正常卸载），不该由后面几段来背。
+const workflowButton = clickable(tree, '迭代流程')
+check('装了迭代流程技能时，迭代页摆出这枚按钮', workflowButton !== undefined)
+if (workflowButton !== undefined) {
+	workflowButton.props.onClick()
+	tree = await settle(createElement(WorkbenchPanelStub, {}))
+	check('点它跳到技能库', allText(tree).includes('模型实际会加载的那份技能目录'))
+	check('并且把那个技能的全文打开了', allText(tree).includes('Markdown 是唯一的源'))
+	clickable(tree, '迭代').props.onClick()
+	tree = await settle(createElement(WorkbenchPanelStub, {}))
+	check('回到迭代页（后面几段还在时间轴上）', clickable(tree, '迭代流程') !== undefined && allText(tree).includes('未入记录'))
+}
 
 /* ==================== 技能库页 ==================== */
 const skillsTab = clickable(tree, '技能库')
@@ -1254,14 +1288,14 @@ check('读不出正文时把原因摆出来', allText(tree).includes('读不到�
 check('读不出时不崩，还能退回时间轴', clickable(tree, '← 回到时间轴') !== undefined)
 clickable(tree, '← 回到时间轴').props.onClick()
 tree = await settle(createElement(Panel, {}))
-check('退回时间轴', allText(tree).includes('载入演示') && allText(tree).includes('补经济分析敏感性'))
+check('退回时间轴', allText(tree).includes('未入记录') && allText(tree).includes('补经济分析敏感性'))
 
 // ② 换成「重跑一遍」那一轮：和上一版（20260912T1600）比 → 真差异
 roundRow('重跑一遍，内容没动').props.onClick()
 tree = await settle(createElement(Panel, {}))
 clickable(tree, '和上一版比').props.onClick()
 tree = await settle(createElement(Panel, {}))
-const baseline = findAll(tree, (node) => node.host === 'select')[0]
+const baseline = findAll(tree, (node) => node.host === 'select' && node.props['data-workbench-role'] === 'diff-base')[0]
 check('对比视图有基线选择器', baseline !== undefined)
 check('基线候选就是同产线更早的轮次', baseline.props.children.length === 4, `实际 ${baseline.props.children.length} 项`)
 check('默认基线是上一轮', baseline.props.value === '20260912T1600-毕业论文-5', String(baseline.props.value))
@@ -1290,7 +1324,7 @@ check('统计徽章不带增删', allText(tree).includes('新增 0 段 · 删掉
 const beforeClose = textCalls().length
 clickable(tree, '← 回到时间轴').props.onClick()
 tree = await settle(createElement(Panel, {}))
-check('收起后回到时间轴', allText(tree).includes('载入演示'))
+check('收起后回到时间轴', allText(tree).includes('未入记录'))
 check('收起后不再读正文', textCalls().length === beforeClose, `实际 ${textCalls().length} 次`)
 
 // ④ 更旧的那一轮没有上一版 → 按钮是灰的，悬停说原因

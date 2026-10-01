@@ -176,24 +176,45 @@ if (result.body.exists === false) {
 	check('孤儿项真的没有源', result.body.pairs.filter((p) => p.state === 'orphan').every((p) => p.source === null && p.artifact !== null))
 }
 
-/* ==================== /demo 与 /history（真扫演示项目） ==================== */
+/* ==================== /history（在临时项目里真读记录） ==================== */
 
-result = await call(route, '/api/dsh-workbench/demo')
-check('/demo 指向插件自带的演示项目', result.status === 200 && result.body.exists === true, result.body.dir)
-const demoDir = result.body.dir
+// 自己搭一个项目根：两条产线，一条最近动过、一条早得多。
+// 顺带把「产线按最近动过的排最前」这条规矩钉住——原来这里是拿插件自带的演示项目测的，
+// 演示已经拿掉，测试就不该再依赖仓库里的一份假数据。
+const histRoot = await mkdtemp(join(tmpdir(), 'dsh-workbench-history-'))
+const oldLine = join(histRoot, '旧产线')
+const newLine = join(histRoot, '新产线')
+const OLD_AT = 1788000000000
+const NEW_AT = 1789000000000
+await mkdir(join(oldLine, '.versions'), { recursive: true })
+await mkdir(join(newLine, '.versions'), { recursive: true })
+await writeFile(
+	join(oldLine, '.versions', 'produced.jsonl'),
+	`${JSON.stringify({ id: 'o1', at: OLD_AT, line: '旧产线', artifact: '报告.docx', snapshot: '.versions/o1.docx', kind: 'docx', bytes: 100, summary: '旧产线那一版', sources: [{ path: 'a.md' }] })}\n`,
+	'utf8'
+)
+await writeFile(
+	join(newLine, '.versions', 'produced.jsonl'),
+	`${JSON.stringify({ id: 'n1', at: NEW_AT - 60000, line: '新产线', artifact: '论文.docx', snapshot: '.versions/n1.docx', kind: 'docx', bytes: 100, summary: '新产线第一版', sources: [{ path: 'b.md' }] })}\n` +
+		`${JSON.stringify({ id: 'n2', at: NEW_AT, line: '新产线', artifact: '论文.pdf', snapshot: '.versions/n2.pdf', kind: 'pdf', bytes: 200, summary: '新产线导出 PDF', sources: [{ path: 'b.md' }] })}\n`,
+	'utf8'
+)
+await writeFile(join(newLine, '.versions', 'decisions.jsonl'), `${JSON.stringify({ id: 'n1', at: NEW_AT, state: 'approved', by: 'tester', note: '' })}\n`, 'utf8')
 
-result = await call(route, `/api/dsh-workbench/history?dir=${encodeURIComponent(demoDir)}`)
+result = await call(route, `/api/dsh-workbench/history?dir=${encodeURIComponent(histRoot)}`)
 const hist = result.body
-check('/history 读到三条产线', hist.exists === true && hist.lines.length === 3, `实际 ${hist.lines?.length}`)
-check('/history 总轮数为 27', hist.totals.rounds === 27, String(hist.totals.rounds))
+check('/history 读到两条产线', hist.exists === true && hist.lines.length === 2, `实际 ${hist.lines?.length}`)
+check('/history 总轮数为 3', hist.totals.rounds === 3, String(hist.totals.rounds))
 check('/history 状态计数自洽', hist.totals.pending + hist.totals.approved + hist.totals.rejected === hist.totals.rounds)
 check('/history 每轮都带摘要与来源', hist.lines.every((line) => line.rounds.every((r) => r.summary !== '' && Array.isArray(r.sources))))
 check('/history 每轮都有快照路径', hist.lines.every((line) => line.rounds.every((r) => r.snapshot.startsWith('.versions/'))))
 check('/history 按时间倒序', hist.lines.every((line) => line.rounds.every((r, i, arr) => i === 0 || arr[i - 1].at >= r.at)))
 check('/history 按天归类', hist.lines.every((line) => line.rounds.every((r) => /^\d{4}-\d{2}-\d{2}$/.test(r.day))))
 check('/history 识别多种产物类型', new Set(hist.lines.flatMap((l) => l.kinds)).size >= 2)
-check('/history 审批默认待审', hist.totals.pending > 0)
 check('/history 已有历史审批', hist.totals.approved > 0)
+check('/history 产线按最近动过的排最前', hist.lines[0].name === '新产线' && hist.lines[1].name === '旧产线', hist.lines.map((l) => l.name).join('、'))
+check('/history 产线头带 firstAt / lastAt', hist.lines[0].lastAt === NEW_AT && hist.lines[1].lastAt === OLD_AT)
+check('/demo 这条路由已经拿掉', (await call(route, '/api/dsh-workbench/demo')).status === 404)
 
 /* ==================== /decide（在临时目录里真写一次） ==================== */
 

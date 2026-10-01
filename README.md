@@ -58,13 +58,14 @@ Markdown 是源，docx/pdf 是产物。改完 md 忘了重新生成 → 交出�
   探到变化时顶栏给一条提示「多了 N 轮」+【现在刷新】【稍后】——**不擅自改你正在看的那一屏**；
 - 顶部按状态（待我审 / 已通过 / 要改）、产线、类型筛选。
 
-**「载入演示」** 一键加载插件自带的假数据（`examples/thesis-workbench/`，3 条产线 27 轮），
-先看效果再决定要不要用。演示里的 Word 与 Excel 是**真的容器**（内容假、zip 与 document.xml 是真的），
-所以「和上一版比」点得动——「经济分析」那条产线五轮全是 xlsx，专门用来看表格怎么比。
+**目录只有两个来源**：顶栏那个「最近用过…」下拉（最近打开过的目录 + DSH 已登记的工作区），
+或者自己填、点「浏览…」选。**没有演示数据，也没有预置路径——看的就是你自己的项目**。
 
-![迭代页：产线分组 + 按天时间轴 + 悬停摘要卡](assets/screenshot-iteration.png)
+**产线按「最近动过」排**：最上面那条就是你上一轮在改的线；产线头上写着它一共多少轮、
+最近一次是什么时候（悬停看具体时间）、还有几轮待你审。
 
-*截图里是插件自带的演示项目，内容全是假数据；右侧浮层是鼠标悬停在某一轮上时的摘要卡。*
+**干活时的那套规程就在手边**：本机装了 `doc-iteration-control` 这类迭代流程技能时，
+顶栏会多出一枚【迭代流程】，点开就是技能库里的全文——不用先想起「技能库里好像有这么个技能」。
 
 #### 和上一版比
 
@@ -211,7 +212,7 @@ dsh plugin --profile web remove dsh-workbench
 
 ## 它怎么拿到数据
 
-宿主半侧只有 10 条 JSON 路由，全部在 `/api/dsh-workbench/` 下：
+宿主半侧只有 9 条 JSON 路由，全部在 `/api/dsh-workbench/` 下：
 
 | 路由 | 方法 | 数据来源 |
 |---|---|---|
@@ -220,7 +221,6 @@ dsh plugin --profile web remove dsh-workbench
 | `/docs?dir=` | GET | `node:fs/promises` 扫目录 + 源产物配对 |
 | `/workspaces` | GET | `ctx.workspaceRegistry.list()` —— 目录下拉 |
 | `/history?dir=` | GET | 读各产线的 `.versions/produced.jsonl` + `decisions.jsonl` |
-| `/demo` | GET | 插件自带演示项目的绝对路径 |
 | `/decide` | POST | 写操作①：往 `<产线>/.versions/decisions.jsonl` 追加一行审批 |
 | `/reveal` | POST | 碰外界②：用系统默认程序打开一版产物，或在文件管理器里定位它 |
 | `/scan` | POST | 找「还没进记录」的产物：比对记录与磁盘 + 去 `ctx.sessionQuery` 翻生成命令 |
@@ -260,18 +260,14 @@ dsh-workbench/
 ├── lib/
 │   ├── index.js          # 宿主半侧：11 条路由（ESM，零依赖）
 │   └── client.js         # 浏览器半侧：侧栏图标 + 三个页签（手写 __ModuleLoader__ bundle，无构建步骤）
-├── examples/
-│   ├── make-demo.mjs     # 生成演示项目（假内容、真结构；docx 打成真 zip，文件时间也拨回记录里那一刻）
-│   └── thesis-workbench/ # 演示数据：3 条产线 27 轮
 └── test/
-    ├── smoke.mjs         # 组件树自检：桩 __ModuleLoader__ + 迷你 React，240 项
-    └── host-routes.mjs   # 路由自检：假 req/res + 真实文件系统 + 真写审批与快照，168 项
+    ├── smoke.mjs         # 组件树自检：桩 __ModuleLoader__ + 迷你 React，248 项
+    └── host-routes.mjs   # 路由自检：假 req/res + 真实文件系统 + 真写审批与快照，169 项
 ```
 
 ```sh
 node test/smoke.mjs
 node test/host-routes.mjs          # 可选参数：/docs 要扫描的目录
-node examples/make-demo.mjs        # 重新生成演示数据
 ```
 
 两套自检都**不需要浏览器**：客户端 bundle 的 `factory` 与组件都是普通函数，在 Node 里可直接跑
@@ -305,9 +301,10 @@ node examples/make-demo.mjs        # 重新生成演示数据
 ## 关于这个仓库：作者与 AI 披露
 
 - 本仓库的代码由 **DeepSeek Harness 中的 AI Agent 生成**，由仓库所有者审阅、验证并发布；
-  每次提交的验证方式记录在 `CHANGELOG.md`（不需要浏览器的两套自检，共 408 项）。
-- **演示数据全是编的**（`examples/thesis-workbench/`，3 条产线 27 轮），不含任何真实文档或个人信息；
-  仓库里不含本机路径、姓名或邮箱，提交作者统一使用 GitHub 的 noreply 邮箱。
+  每次提交的验证方式记录在 `CHANGELOG.md`（不需要浏览器的两套自检，共 417 项；测试全部自建临时目录，
+  不依赖仓库里的任何示例数据）。
+- **仓库里没有示例项目**：曾经的演示数据（3 条产线 27 轮假记录）已经删掉——它是给「先看看长什么样」用的，
+  真实用法一上来就是自己的目录。仓库里也不含本机路径、姓名或邮箱，提交作者统一使用 GitHub 的 noreply 邮箱。
 - 以 **MIT** 发布（见 `LICENSE`）。
 - 第三方接口说明：与 `dsh-better-sidebar` 的集成使用它**公开的**客户端服务契约
   （`ctx.betterSidebar.registerTab`），未复制其代码。该契约按其文档是版本化的（`SIDEBAR_FEATURES`），
