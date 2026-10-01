@@ -18,7 +18,7 @@
 import { Readable } from 'node:stream'
 import { mkdtemp, mkdir, writeFile, rm, readFile, utimes } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join, dirname } from 'node:path'
+import { join, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { deflateRawSync } from 'node:zlib'
 
@@ -258,6 +258,26 @@ check('/decide 之后历史里变成已通过', result.body.totals.approved === 
 const decisionsText = await readFile(join(tempLine, '.versions', 'decisions.jsonl'), 'utf8')
 check('审批是追加式记录（一行一事件）', decisionsText.trim().split('\n').length === 1 && decisionsText.includes('"state":"approved"'))
 
+// 根产线：记录就放在项目根目录（单产线项目就是这样）。这里曾经只认子目录名，
+// 于是面板上给根产线点【通过】会被挡回来。
+const rootRoot = await mkdtemp(join(tmpdir(), 'dsh-workbench-rootline-'))
+await mkdir(join(rootRoot, '.versions'), { recursive: true })
+await writeFile(
+	join(rootRoot, '.versions', 'produced.jsonl'),
+	`${JSON.stringify({ id: 'root-1', at: 1789000000000, artifact: '毕业论文.docx', snapshot: '.versions/root-1.docx', kind: 'docx', bytes: 100, summary: '根目录那一版', sources: [] })}\n`,
+	'utf8'
+)
+await writeFile(join(rootRoot, '.versions', 'decisions.jsonl'), '', 'utf8')
+
+result = await call(route, `/api/dsh-workbench/history?dir=${encodeURIComponent(rootRoot)}`)
+const rootLine = result.body.lines.find((line) => line.rounds.some((round) => round.id === 'root-1'))
+check('/history 把根目录自己也当成一条产线', rootLine !== undefined && rootLine.rounds[0].line === '.', JSON.stringify(result.body.lines.map((line) => line.name)))
+check('/history 那条产线显示的是目录名', rootLine?.name === basename(rootRoot), rootLine?.name)
+
+result = await call(route, '/api/dsh-workbench/decide', 'POST', { dir: rootRoot, line: '.', id: 'root-1', state: 'approved', by: 'tester' })
+check('/decide 支持根产线（line = "."）', result.status === 200 && result.body.ok === true, JSON.stringify(result.body))
+const rootDecisions = await readFile(join(rootRoot, '.versions', 'decisions.jsonl'), 'utf8')
+check('根产线的审批写进了根目录的 .versions', rootDecisions.includes('"id":"root-1"') && rootDecisions.includes('"state":"approved"'))
 result = await call(route, '/api/dsh-workbench/decide', 'POST', { dir: tempRoot, line: '..\\..\\evil', id: 'r1', state: 'approved' })
 check('/decide 拒绝路径穿越', result.status === 400, String(result.status))
 

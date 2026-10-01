@@ -265,7 +265,7 @@ dsh-workbench/
 │   └── client.js         # 浏览器半侧：侧栏图标 + 三个页签（手写 __ModuleLoader__ bundle，无构建步骤）
 └── test/
     ├── smoke.mjs         # 组件树自检：桩 __ModuleLoader__ + 迷你 React，251 项
-    └── host-routes.mjs   # 路由自检：假 req/res + 真实文件系统 + 真写审批与快照，173 项
+    └── host-routes.mjs   # 路由自检：假 req/res + 真实文件系统 + 真写审批与快照，177 项
 ```
 
 ```sh
@@ -304,7 +304,7 @@ node test/host-routes.mjs          # 可选参数：/docs 要扫描的目录
 ## 关于这个仓库：作者与 AI 披露
 
 - 本仓库的代码由 **DeepSeek Harness 中的 AI Agent 生成**，由仓库所有者审阅、验证并发布；
-  每次提交的验证方式记录在 `CHANGELOG.md`（不需要浏览器的两套自检，共 424 项；测试全部自建临时目录，
+  每次提交的验证方式记录在 `CHANGELOG.md`（不需要浏览器的两套自检，共 428 项；测试全部自建临时目录，
   不依赖仓库里的任何示例数据）。
 - **仓库里没有示例项目**：曾经的演示数据（3 条产线 27 轮假记录）已经删掉——它是给「先看看长什么样」用的，
   真实用法一上来就是自己的目录。仓库里也不含本机路径、姓名或邮箱，提交作者统一使用 GitHub 的 noreply 邮箱。
