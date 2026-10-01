@@ -567,7 +567,13 @@ async function fakeFetch(url, options) {	const method = options?.method ?? 'GET'
 		return { status: 200, async text() { return JSON.stringify({ ok: true, id: 'adopted-1', snapshot: `.versions/20260919T2100-${payload.file}`, bytes: 38000 }) } }
 	}
 	let body
-	if (url.includes('/history?')) body = historyBody()
+	if (url.includes('/history?')) {
+		// 目录被删/改名的那种情况：让桩也如实返回 exists:false
+		const asked = new URL(url, 'http://localhost').searchParams.get('dir') ?? ''
+		body = asked.includes('已经不在')
+			? { dir: asked, exists: false, error: '读不到目录：ENOENT', lines: [], totals: { rounds: 0, pending: 0, approved: 0, rejected: 0, lines: 0 } }
+			: historyBody()
+	}
 	else if (url.includes('/skills')) body = { complete: true, cwd: '', skills: SKILLS }
 	else if (url.includes('/skill?')) body = { name: 'doc-iteration-control', content: '# 文档迭代控制\n\nMarkdown 是唯一的源。', path: 'C:\\Users\\me\\.agents\\skills\\doc-iteration-control\\SKILL.md' }
 	else if (url.includes('/workspaces')) body = { workspaces: [{ id: 'w1', path: 'D:\\work\\my-project', title: 'my-project' }] }
@@ -1414,6 +1420,19 @@ tree = await settle(createElement(Panel, {}))
 // 读不出来的表格：如实说
 roundRow('这一版的快照读不出来').props.onClick()
 tree = await settle(createElement(Panel, {}))
+
+/* ==================== 记着的目录已经不在了 ==================== */
+
+// 上次看的目录被删掉/改了名（比如刚清掉那份演示数据）：如实说读不到，
+// 并指向能换目录的地方——而不是每次开机都拿同一个空目录把这一屏读空。
+const goneInput = findAll(tree, (node) => node.host === 'input' && String(node.props.placeholder).includes('项目目录'))[0]
+check('对比视图里顶栏仍在（随时能换目录）', goneInput !== undefined)
+goneInput.props.onChange({ target: { value: 'C:\\no\\这个目录已经不在' } })
+tree = await settle(createElement(Panel, {}))
+clickable(tree, '读取').props.onClick()
+tree = await settle(createElement(Panel, {}))
+check('目录不在了时给可读原因', allText(tree).includes('读不到目录：ENOENT'), allText(tree).slice(0, 200))
+check('并且指向那个下拉', allText(tree).includes('换一个目录'))
 
 /* ==================== 主题探测 ==================== */
 

@@ -16,7 +16,7 @@
  */
 
 import { Readable } from 'node:stream'
-import { mkdtemp, mkdir, writeFile, rm, readFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, rm, readFile, utimes } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -327,6 +327,11 @@ ctx.get = ((original) => (key) => {
 	}
 })(ctx.get)
 await writeFile(mdPath, '# 第三章\n', 'utf8')
+// 源要**确实早于**产物：同一毫秒里连着写两个文件，文件系统分不出先后，
+// 而 sourcesOf 的判据是「源的 mtime ≤ 产物的 mtime」——落平了就偶发判成「这一版没有来源」。
+// 这里给它一个明确的提前量，测试才不会十次里假失败一次。
+const sourceTime = new Date(Date.now() - 60000)
+await utimes(mdPath, sourceTime, sourceTime)
 await writeFile(docxPath, 'docx-新版', 'utf8')
 await writeFile(join(tempLine, '论文全文.pdf'), 'pdf', 'utf8')
 
