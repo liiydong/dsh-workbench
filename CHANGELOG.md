@@ -2,6 +2,25 @@
 
 本文件记录 dsh-workbench 每个版本做了什么。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)。
 
+## [0.6.2] — 2026-10-20
+
+### /adopt 写下的 note，时间轴上看得见了
+
+`/adopt` 一直收 `note`（面板上「这一版改了什么」那个输入框写的就是它），记录也老老实实写进
+`produced.jsonl`；可时间轴只读 `summary`，于是**收编出来的那一版永远只剩文件名**——人补的那句话被吞了。
+绕法就成了「干脆把话写进 summary」，于是 note 白留了一个字段。
+
+- 宿主 `/history` 每轮多透出一个 `note`（`readLine` 从记录里原样取，不改历史文件）；
+- 面板一行显示「摘要优先，没有就显示 note，再没有才退回文件名」；两个都有又不是同一句时，
+  note 另起一行（小一号、暗一档）写成「备注：…」，悬停卡里同样带一句；
+- 收编输入框的占位文案改成「这一版改了什么（一句话，写进记录，也会显示在时间轴上）」。
+
+### 自检
+
+`node test/smoke.mjs` 254 项、`node test/host-routes.mjs` 180 项，全绿。
+新增三条客户端断言：摘要之外还显示 note、只有 note 没有 summary 时退回显示 note、悬停卡也带 note；
+三条宿主断言：`/history` 透出 `/adopt` 写下的 note、summary 与 note 并存时都不丢。
+
 ## [0.6.1] — 2026-10-11
 
 ### 根产线的【通过】点不动

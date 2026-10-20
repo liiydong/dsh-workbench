@@ -392,10 +392,22 @@ check('/adopt 往 produced.jsonl 追加了一行', adoptedText.trim().split('\n'
 check('/adopt 记录里带 note 与 adopted 标记', adoptedText.includes('"note":"第一次收编"') && adoptedText.includes('"adopted":true'))
 const snapshotFile = join(tempLine, String(result.body.snapshot).replace('.versions/', '.versions\\'))
 check('/adopt 真的写了快照文件', (await readFile(snapshotFile, 'utf8')) === 'docx-新版')
+// 收编时手写的那句 note 必须能穿到 /history：面板上显示的是它（以前只透出 summary）。
+const adoptedId = result.body.id
 
 result = await call(route, '/api/dsh-workbench/scan', 'POST', { dir: tempRoot })
 check('/adopt 之后它不再出现在「没进记录」里', result.body.lines[0].products.every((p) => p.name !== '论文全文.docx'), JSON.stringify(result.body.lines[0].products.map((p) => p.name)))
 check('没记过的那份还在列表里', result.body.lines[0].products.some((p) => p.name === '论文全文.pdf'))
+
+// summary 与 note 是两回事：前者是产出记录自带的，后者是 /adopt 时人补的。
+// 两个都要透出来，面板才画得出「摘要 + 备注」两行。
+result = await call(route, '/api/dsh-workbench/adopt', 'POST', { dir: tempRoot, line: '产线A', file: '论文全文.pdf', note: '顺手把 PDF 也收了', summary: '导出 PDF' })
+check('/adopt 同时收 summary 与 note', result.status === 200, JSON.stringify(result.body))
+result = await call(route, `/api/dsh-workbench/history?dir=${encodeURIComponent(tempRoot)}`)
+const adoptedRounds = result.body.lines.flatMap((line) => line.rounds)
+const adoptedRound = adoptedRounds.find((round) => round.id === adoptedId)
+check('/history 透出 /adopt 写下的 note', adoptedRound?.note === '第一次收编', JSON.stringify(adoptedRound))
+check('/history 里 note 与 summary 并存', adoptedRounds.some((round) => round.summary === '导出 PDF' && round.note === '顺手把 PDF 也收了'), JSON.stringify(adoptedRounds.map((r) => ({ summary: r.summary, note: r.note }))))
 
 result = await call(route, '/api/dsh-workbench/adopt', 'POST', { dir: tempRoot, line: '产线A', file: '论文全文.docx' })
 check('/adopt 同一分钟重复收编时报 409（不覆盖快照）', result.status === 409, String(result.status))

@@ -412,6 +412,7 @@ const ROUND_DEFS = [
 		tool: 'python thesis_docx.py',
 		by: 'dsh',
 		summary: '第3章：修正乙苯转化率 0.62→0.58，重算全表',
+		note: '上次说这一版就按这个数定',
 		sources: [{ path: '03-第三章-物料衡算.md', note: '' }]
 	},
 	{
@@ -441,7 +442,9 @@ const ROUND_DEFS = [
 		bytesText: '175.8 KB',
 		tool: 'python export_pfd.py',
 		by: 'dsh',
-		summary: '补流程图导出脚本，PFD 自动出图',
+		// 这一版故意没写 summary：/adopt 收编出来的记录就长这样（只有 note）。
+		summary: '',
+		note: '补流程图导出脚本，PFD 自动出图',
 		sources: [{ path: '流程说明.md', note: '' }]
 	}
 ]
@@ -903,6 +906,9 @@ tree = await settle(createElement(Panel, {}))
 check('切回原目录继续', requests.filter((url) => url.includes(encodeURIComponent(SAMPLE_DIR))).length >= 2)
 check('渲染出产线分组', allText(tree).includes('毕业论文') && allText(tree).includes('Aspen流程模拟'))
 check('渲染出轮次摘要', allText(tree).includes('修正乙苯转化率'))
+// /adopt 收编时人补的那句存在 note 里：时间轴以前只读 summary，于是收编出来的那一版只剩文件名。
+check('摘要之外还显示收编时写的 note', allText(tree).includes('备注：上次说这一版就按这个数定'))
+check('只有 note 没有 summary 时，退回显示 note', allText(tree).includes('补流程图导出脚本，PFD 自动出图'))
 check('渲染出按天小节', allText(tree).includes('2026-09-11'))
 check('显示审批状态徽章', allText(tree).includes('待我审'))
 
@@ -913,6 +919,7 @@ check('轮次行可悬停', hoverRow !== undefined)
 hoverRow.props.onMouseEnter({ currentTarget: { getBoundingClientRect: () => ({ top: 120, right: 260 }) } })
 tree = await settle(createElement(Panel, {}))
 check('悬停出现摘要卡', allText(tree).includes('快照：') && allText(tree).includes('python thesis_docx.py'))
+check('摘要卡也带 note', allText(tree).includes('备注：上次说这一版就按这个数定'))
 check('摘要卡带改动来源', allText(tree).includes('03-第三章-物料衡算.md'))
 
 // 点击 → 审批
