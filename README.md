@@ -330,7 +330,7 @@ node test/record-cli.mjs      # 记录器 CLI
 
 三套自检都**不需要浏览器**：客户端 bundle 的 `factory` 与组件都是普通函数，在 Node 里可直接跑
 （迷你 React 运行时按组件实例分配 hook 槽、按「组件类型 + hook 序号」去重 effect、在渲染循环里展开整棵树）。
-`host-routes.mjs` 还会在系统临时目录里真写审批、真收编一版产物（快照 + 记录），
+`host-routes.mjs` 还会在系统临时目录里真写审批、真记录一版产物（快照 + 记录），
 并用桩会话服务验证 `/scan` 的归因反例（读入方、删除命令、别的项目）。
 `record-cli.mjs` 真起 `node bin/record.mjs` 子进程，再把同一份目录交给宿主 `/history` 读回来——
 两条写入路径必须读得出同一份结果，这是这套自检存在的理由。抓得到崩溃与状态流转错误，抓不到布局观感。
