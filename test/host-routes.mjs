@@ -16,7 +16,7 @@
  */
 
 import { Readable } from 'node:stream'
-import { mkdtemp, mkdir, writeFile, rm, readFile, utimes } from 'node:fs/promises'
+import { mkdtemp, mkdir, writeFile, rm, readFile, utimes, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, dirname, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -39,11 +39,13 @@ function check(label, condition, detail) {
 	}
 }
 
-/** 造一个假请求（POST 可带 JSON 体）。 */
-function request(url, method = 'GET', body) {
+/** 造一个假请求（POST 可带 JSON 体与额外头）。 */
+function request(url, method = 'GET', body, headers = {}) {
 	const req = new Readable({ read() {} })
 	req.url = url
 	req.method = method
+	// 写接口现在要求 application/json；正常请求默认带上，测「拒绝」的用例再显式覆盖。
+	req.headers = body !== undefined ? { 'content-type': 'application/json', ...headers } : { ...headers }
 	if (body !== undefined) req.push(JSON.stringify(body))
 	req.push(null)
 	return req
@@ -66,9 +68,9 @@ function response() {
 	}
 }
 
-async function call(route, url, method = 'GET', body) {
+async function call(route, url, method = 'GET', body, headers) {
 	const { res, captured } = response()
-	await route.handler(request(url, method, body), res)
+	await route.handler(request(url, method, body, headers), res)
 	let parsed = null
 	try {
 		parsed = JSON.parse(captured.text)
@@ -76,6 +78,13 @@ async function call(route, url, method = 'GET', body) {
 		parsed = { parseError: captured.text.slice(0, 120) }
 	}
 	return { status: captured.status, body: parsed, headers: captured.headers }
+}
+
+/** 本地时间戳 `YYYYMMDDTHHmm`——和 lib/record.js 的快照名前缀同一规则。 */
+function stampText(ms) {
+	const d = new Date(ms)
+	const p = (n) => String(n).padStart(2, '0')
+	return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}T${p(d.getHours())}${p(d.getMinutes())}`
 }
 
 /* ==================== 桩上下文 ==================== */
@@ -233,6 +242,41 @@ check('/history 已有历史审批', hist.totals.approved > 0)
 check('/history 产线按最近动过的排最前', hist.lines[0].name === '新产线' && hist.lines[1].name === '旧产线', hist.lines.map((l) => l.name).join('、'))
 check('/history 产线头带 firstAt / lastAt', hist.lines[0].lastAt === NEW_AT && hist.lines[1].lastAt === OLD_AT)
 check('/demo 这条路由已经拿掉', (await call(route, '/api/dsh-workbench/demo')).status === 404)
+check('/history 每条产线都报快照占用（没有快照就是 0）', hist.lines.every((line) => line.snapshots !== undefined && Number.isFinite(line.snapshots.count) && Number.isFinite(line.snapshots.bytes)))
+
+/* ==================== 记录健康度 + 快照占用（记录被写坏了要说出来） ==================== */
+
+const healthRoot = await mkdtemp(join(tmpdir(), 'dsh-workbench-health-'))
+const healthLine = join(healthRoot, '产线B')
+await mkdir(join(healthLine, '.versions'), { recursive: true })
+await writeFile(join(healthLine, '.versions', '20261001T1000-报告.docx'), Buffer.alloc(2048, 7))
+await writeFile(
+	join(healthLine, '.versions', 'produced.jsonl'),
+	`${JSON.stringify({ id: 'h1', at: 1790000000000, line: '产线B', artifact: '报告.docx', snapshot: '.versions/20261001T1000-报告.docx', kind: 'docx', bytes: 2048, summary: '好行' })}\n` +
+		'{这一行不是 JSON\n' +
+		`${JSON.stringify({ at: 1790000000001, artifact: '缺 id 的行.docx' })}\n`,
+	'utf8'
+)
+// 审批文件也写坏一行：坏行不能让整页打不开，但必须报出来
+await writeFile(join(healthLine, '.versions', 'decisions.jsonl'), '{坏审批行\n', 'utf8')
+// 用户顺手放进 .versions 的笔记不是快照，不该被算进占用里
+await writeFile(join(healthLine, '.versions', '笔记.md'), Buffer.alloc(1000, 1))
+
+// 一条只剩坏审批、没有可读产出的产线：也得列出来，不然「记录坏了」就被藏了
+const doomedLine = join(healthRoot, '只有坏审批')
+await mkdir(join(doomedLine, '.versions'), { recursive: true })
+await writeFile(join(doomedLine, '.versions', 'decisions.jsonl'), '{坏审批行\n', 'utf8')
+
+result = await call(route, `/api/dsh-workbench/history?dir=${encodeURIComponent(healthRoot)}`)
+const healthLineOut = result.body.lines.find((line) => line.name === '产线B')
+check('/history 坏行旁边的正常记录照常返回', healthLineOut?.rounds.length === 1 && healthLineOut.rounds[0].id === 'h1', JSON.stringify(healthLineOut?.rounds?.map((r) => r.id)))
+check('/history 报出 produced.jsonl 的坏行数', healthLineOut?.bad.produced === 1, JSON.stringify(healthLineOut?.bad))
+check('/history 报出缺 id 的行数', healthLineOut?.bad.incomplete === 1, JSON.stringify(healthLineOut?.bad))
+check('/history 报出 decisions.jsonl 的坏行数', healthLineOut?.bad.decisions === 1, JSON.stringify(healthLineOut?.bad))
+check('/history 报出快照个数与总字节', healthLineOut?.snapshots.count === 1 && healthLineOut?.snapshots.bytes === 2048, JSON.stringify(healthLineOut?.snapshots))
+const doomedLineOut = result.body.lines.find((line) => line.name === '只有坏审批')
+check('/history 只有坏审批的产线也列出来（不因 0 轮被藏掉）', doomedLineOut !== undefined && doomedLineOut.rounds.length === 0 && doomedLineOut.bad.decisions === 1, JSON.stringify(doomedLineOut))
+await rm(healthRoot, { recursive: true, force: true })
 
 /* ==================== /decide（在临时目录里真写一次） ==================== */
 
@@ -394,6 +438,10 @@ const snapshotFile = join(tempLine, String(result.body.snapshot).replace('.versi
 check('/adopt 真的写了快照文件', (await readFile(snapshotFile, 'utf8')) === 'docx-新版')
 // 收编时手写的那句 note 必须能穿到 /history：面板上显示的是它（以前只透出 summary）。
 const adoptedId = result.body.id
+// at 取的是**产物 mtime**：补记一个月前的旧版本，时间轴不会把它排到今天最前面。
+const adoptedRow = JSON.parse(adoptedText.trim().split('\n')[1] ?? '{}')
+const docxInfo = await stat(join(tempLine, '论文全文.docx'))
+check('/adopt 的 at 取产物 mtime（不是记录时刻）', adoptedRow.at === Math.floor(docxInfo.mtimeMs), `${adoptedRow.at} vs ${docxInfo.mtimeMs}`)
 
 result = await call(route, '/api/dsh-workbench/scan', 'POST', { dir: tempRoot })
 check('/adopt 之后它不再出现在「没进记录」里', result.body.lines[0].products.every((p) => p.name !== '论文全文.docx'), JSON.stringify(result.body.lines[0].products.map((p) => p.name)))
@@ -408,6 +456,9 @@ const adoptedRounds = result.body.lines.flatMap((line) => line.rounds)
 const adoptedRound = adoptedRounds.find((round) => round.id === adoptedId)
 check('/history 透出 /adopt 写下的 note', adoptedRound?.note === '第一次收编', JSON.stringify(adoptedRound))
 check('/history 里 note 与 summary 并存', adoptedRounds.some((round) => round.summary === '导出 PDF' && round.note === '顺手把 PDF 也收了'), JSON.stringify(adoptedRounds.map((r) => ({ summary: r.summary, note: r.note }))))
+const pdfRow = JSON.parse((await readFile(join(tempLine, '.versions', 'produced.jsonl'), 'utf8')).trim().split('\n').at(-1))
+check('/adopt 记录的 summary 与 note 分开存', pdfRow.summary === '导出 PDF' && pdfRow.note === '顺手把 PDF 也收了', JSON.stringify({ summary: pdfRow.summary, note: pdfRow.note }))
+check('/adopt 记录带 by 与 adopted 标记', pdfRow.by === 'human' && pdfRow.adopted === true, JSON.stringify({ by: pdfRow.by, adopted: pdfRow.adopted }))
 
 result = await call(route, '/api/dsh-workbench/adopt', 'POST', { dir: tempRoot, line: '产线A', file: '论文全文.docx' })
 check('/adopt 同一分钟重复收编时报 409（不覆盖快照）', result.status === 409, String(result.status))
@@ -436,7 +487,51 @@ check('/scan 缺 dir 时 400', result.status === 400, String(result.status))
 result = await call(route, '/api/dsh-workbench/scan', 'POST', { dir: join(tmpdir(), 'dsh-workbench-没有这个目录') })
 check('/scan 目录不存在时给可读原因而不是 500', result.status === 200 && result.body.exists === false && typeof result.body.error === 'string')
 
+// 记录器的共用实现会顺手建 .versions：手上还没有任何记录的产线也能直接收编
+const freshRoot = await mkdtemp(join(tmpdir(), 'dsh-workbench-fresh-'))
+const freshLine = join(freshRoot, '新产线')
+await mkdir(freshLine, { recursive: true })
+await writeFile(join(freshLine, '报告.pdf'), 'pdf', 'utf8')
+result = await call(route, '/api/dsh-workbench/adopt', 'POST', { dir: freshRoot, line: '新产线', file: '报告.pdf', summary: '第一次' })
+check('/adopt 在没有 .versions 的产线里也能写', result.status === 200 && result.body.ok === true, JSON.stringify(result.body))
+check('/adopt 顺手建了 .versions/record', (await readFile(join(freshLine, '.versions', 'produced.jsonl'), 'utf8')).includes('"summary":"第一次"'))
+await rm(freshRoot, { recursive: true, force: true })
+
 await rm(tempRoot, { recursive: true, force: true })
+
+/* ==================== /adopt 的自愈：快照还在、记录没了 ==================== */
+
+// 0.6.x 的 at 取记录时刻，隔一分钟重收编能成功；0.7.0 改成 at=产物 mtime 后，旧快照会一直撞名。
+// 撞名要分清三种来路：同一版重复（409）、同一分钟的另一版（409，提示等一分钟或用记录器）、
+// 快照没人引用（写记录失败 / 手工删了记录行）→ 复用快照补记录，不能永久卡死。
+const healRoot = await mkdtemp(join(tmpdir(), 'dsh-workbench-heal-'))
+const healLine = join(healRoot, '修复产线')
+await mkdir(join(healLine, '.versions'), { recursive: true })
+const healAt = 1790000000000
+await writeFile(join(healLine, '论文.docx'), '新版内容', 'utf8')
+await utimes(join(healLine, '论文.docx'), new Date(healAt), new Date(healAt))
+const healSnapshot = `${stampText(healAt)}-修复产线-论文.docx`
+await writeFile(join(healLine, '.versions', healSnapshot), '旧快照（没有记录引用它）', 'utf8')
+
+result = await call(route, '/api/dsh-workbench/adopt', 'POST', { dir: healRoot, line: '修复产线', file: '论文.docx', summary: '补收编' })
+check('/adopt 复用没人引用的旧快照补记录（不永久 409）', result.status === 200 && result.body.snapshot === `.versions/${healSnapshot}`, JSON.stringify(result.body))
+check('/adopt 复用快照时把内容对齐当前产物', (await readFile(join(healLine, '.versions', healSnapshot), 'utf8')) === '新版内容')
+
+result = await call(route, '/api/dsh-workbench/adopt', 'POST', { dir: healRoot, line: '修复产线', file: '论文.docx' })
+check('/adopt 同一版重复收编仍是 409，且说清「已经记过」', result.status === 409 && String(result.body.error).includes('已经记过'), JSON.stringify(result.body))
+
+// 同一分钟的另一版（mtime 不同、stamp 相同）：面板仍按冲突处理，并给出「等一分钟 / 用记录器」的路
+await utimes(join(healLine, '论文.docx'), new Date(healAt + 30000), new Date(healAt + 30000))
+result = await call(route, '/api/dsh-workbench/adopt', 'POST', { dir: healRoot, line: '修复产线', file: '论文.docx' })
+check('/adopt 同一分钟的另一版按冲突处理并给出路', result.status === 409 && String(result.body.error).includes('这一分钟'), JSON.stringify(result.body))
+
+// 记录文件被清空（写坏后手工删行）：再收编应能补回来
+await writeFile(join(healLine, '.versions', 'produced.jsonl'), '', 'utf8')
+result = await call(route, '/api/dsh-workbench/adopt', 'POST', { dir: healRoot, line: '修复产线', file: '论文.docx', summary: '记录重建' })
+check('/adopt 记录被清掉后能重新收编（自愈）', result.status === 200, JSON.stringify(result.body))
+const healedRows = (await readFile(join(healLine, '.versions', 'produced.jsonl'), 'utf8')).trim().split('\n').map((line) => JSON.parse(line))
+check('/adopt 自愈后只补一行记录', healedRows.length === 1 && healedRows[0].summary === '记录重建', JSON.stringify(healedRows.map((r) => r.summary)))
+await rm(healRoot, { recursive: true, force: true })
 
 /* ==================== 归因判据的单元样例（不出错比多给更重要） ==================== */
 
@@ -771,6 +866,30 @@ result = await textOf('假的.xlsx')
 check('不是 zip 的 xlsx 如实说读不出，不当 500', result.status === 200 && result.body.ok === false && String(result.body.error).includes('workbook.xml'), JSON.stringify(result.body).slice(0, 160))
 
 await rm(textRoot, { recursive: true, force: true })
+
+/* ==================== 写接口的同源闸（跨站盲打写接口） ==================== */
+
+// 实测过：宿主这层不拦 Origin。所以插件自己在入口挡——
+// ① 浏览器对跨站的 text/plain「简单请求」不发预检，这类请求必须被 content-type 挡掉；
+// ② 带 Origin 时必须同源，否则任意网页都能盲打 /decide、/adopt、/reveal。
+result = await call(route, '/api/dsh-workbench/scan', 'POST', { dir: process.cwd(), provenance: false }, { 'content-type': 'text/plain', origin: 'https://evil.example' })
+check('写接口拒绝非 application/json（挡住跨站简单请求）', result.status === 415, String(result.status))
+
+// 不能用 includes 判：浏览器按 MIME essence 看，`text/plain;application/json` 仍是 text/plain
+result = await call(route, '/api/dsh-workbench/scan', 'POST', { dir: process.cwd(), provenance: false }, { 'content-type': 'text/plain;application/json' })
+check('content-type 按 MIME essence 严格比较（text/plain;application/json 也拒）', result.status === 415, String(result.status))
+
+result = await call(route, '/api/dsh-workbench/scan', 'POST', { dir: process.cwd(), provenance: false }, { 'content-type': 'application/json; charset=utf-8' })
+check('content-type 带 charset 仍放行', result.status === 200, JSON.stringify(result.body).slice(0, 120))
+
+result = await call(route, '/api/dsh-workbench/scan', 'POST', { dir: process.cwd(), provenance: false }, { origin: 'https://evil.example', host: '127.0.0.1:59024' })
+check('写接口拒绝跨站 Origin', result.status === 403, String(result.status))
+
+result = await call(route, '/api/dsh-workbench/scan', 'POST', { dir: process.cwd(), provenance: false }, { origin: 'http://127.0.0.1:59024', host: '127.0.0.1:59024' })
+check('同源 Origin 放行', result.status === 200, JSON.stringify(result.body).slice(0, 120))
+
+result = await call(route, '/api/dsh-workbench/skills', 'GET', undefined, { origin: 'https://evil.example' })
+check('只读接口不因跨站 Origin 被拦（读不到响应，请求本身无害）', result.status === 200, String(result.status))
 
 /* ==================== 边界 ==================== */
 

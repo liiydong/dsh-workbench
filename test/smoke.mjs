@@ -282,6 +282,8 @@ const DOCS = {
 const requests = []
 /** 审批状态存在桩里：POST /decide 之后再 GET /history 应该看得到变化。 */
 const decisions = new Map()
+/** 审批理由也跟着存：/decide 的 note 是追加式记录的一部分。 */
+const decisionNotes = new Map()
 const SAMPLE_DIR = 'C:\\demo\\thesis-workbench'
 
 /** 桩的「一版正文」：旧版。 */
@@ -522,7 +524,7 @@ function historyBody() {
 	for (const round of [...ROUND_DEFS, ...extraRounds]) {
 		const state = decisions.get(round.id) ?? 'pending'
 		const bucket = lines.get(round.line) ?? { name: round.line, rounds: [], counts: { pending: 0, approved: 0, rejected: 0 }, artifacts: [], kinds: [] }
-		bucket.rounds.push({ ...round, approval: { state, at: 0, by: state === 'pending' ? '' : 'tester', note: '' } })
+		bucket.rounds.push({ ...round, approval: { state, at: 0, by: state === 'pending' ? '' : 'tester', note: decisionNotes.get(round.id) ?? '' } })
 		bucket.counts[state] += 1
 		if (!bucket.artifacts.includes(round.artifact)) bucket.artifacts.push(round.artifact)
 		if (!bucket.kinds.includes(round.kind)) bucket.kinds.push(round.kind)
@@ -532,6 +534,25 @@ function historyBody() {
 	const list = [...lines.values()]
 	// 真宿主是按时间新→旧排的，桩也得一样，否则「上一版」指不定是谁。
 	for (const line of list) line.rounds.sort((a, b) => b.at - a.at)
+	// 宿主现在还会报「快照占了多少」与「记录里几行读不懂」——桩按同形状给。
+	const usage = {
+		毕业论文: { snapshots: { count: 3, bytes: 120000, text: '117.2 KB' }, bad: { produced: 0, decisions: 0, incomplete: 0 } },
+		Aspen流程模拟: { snapshots: { count: 1, bytes: 1024, text: '1 KB' }, bad: { produced: 1, decisions: 0, incomplete: 0 } }
+	}
+	for (const line of list) Object.assign(line, usage[line.name] ?? { snapshots: { count: 0, bytes: 0, text: '0 B' }, bad: { produced: 0, decisions: 0, incomplete: 0 } })
+	// 一条只有坏记录、没有可读轮次的产线：面板不能因为「0 轮」就把「记录坏了」藏起来
+	list.push({
+		name: '坏记录产线',
+		rounds: [],
+		counts: { pending: 0, approved: 0, rejected: 0 },
+		artifacts: [],
+		kinds: [],
+		days: [],
+		firstAt: 0,
+		lastAt: 0,
+		snapshots: { count: 0, bytes: 0, text: '0 B' },
+		bad: { produced: 0, decisions: 3, incomplete: 0 }
+	})
 	const totals = { rounds: ROUND_DEFS.length + extraRounds.length, pending: 0, approved: 0, rejected: 0, lines: list.length }
 	for (const line of list) for (const key of ['pending', 'approved', 'rejected']) totals[key] += line.counts[key]
 	return { dir: SAMPLE_DIR, exists: true, truncated: false, totals, lines: list }
@@ -551,6 +572,7 @@ async function fakeFetch(url, options) {	const method = options?.method ?? 'GET'
 		const payload = JSON.parse(options.body)
 		if (!['approved', 'rejected', 'pending'].includes(payload.state)) return { status: 400, async text() { return JSON.stringify({ error: 'bad state' }) } }
 		decisions.set(payload.id, payload.state)
+		decisionNotes.set(payload.id, payload.note ?? '')
 		return { status: 200, async text() { return JSON.stringify({ ok: true, id: payload.id, state: payload.state }) } }
 	}
 	if (method === 'POST' && url.includes('/reveal')) {
@@ -905,6 +927,9 @@ clickable(tree, '读取').props.onClick()
 tree = await settle(createElement(Panel, {}))
 check('切回原目录继续', requests.filter((url) => url.includes(encodeURIComponent(SAMPLE_DIR))).length >= 2)
 check('渲染出产线分组', allText(tree).includes('毕业论文') && allText(tree).includes('Aspen流程模拟'))
+check('产线头显示快照占用', allText(tree).includes('快照 3 · 117.2 KB'))
+check('记录被写坏时提示读不懂几行', allText(tree).includes('记录 1 行读不懂'))
+check('只有坏记录的产线也列出来（不因 0 轮被藏掉）', allText(tree).includes('坏记录产线') && allText(tree).includes('记录 3 行读不懂'))
 check('渲染出轮次摘要', allText(tree).includes('修正乙苯转化率'))
 // /adopt 收编时人补的那句存在 note 里：时间轴以前只读 summary，于是收编出来的那一版只剩文件名。
 check('摘要之外还显示收编时写的 note', allText(tree).includes('备注：上次说这一版就按这个数定'))
@@ -952,11 +977,38 @@ check('「在文件夹里」用 reveal 模式', revealCalls().some((r) => r.incl
 check('三次都带着产线名', revealCalls().every((r) => r.includes('"line":"毕业论文"')))
 check('打开动作不改动审批状态', !requests.some((r) => r.startsWith('POST') && r.includes('/decide') && r.includes('"state":"pending"')))
 
-approve.props.onClick()
+// 审批理由：选中后写一句，点【通过】时一起进 decisions.jsonl。
+// 以前这里没有输入框，/decide 的 note 永远发空串，「你的意见」也就永远空着。
+const reasonInput = inputByPlaceholder(tree, '这一版为什么通过')
+check('选中一轮后有审批理由输入框', reasonInput !== undefined)
+reasonInput.props.onChange({ target: { value: '这一版可以定稿' } })
 tree = await settle(createElement(Panel, {}))
-check('发出了审批写请求', requests.some((r) => r.startsWith('POST') && r.includes('/decide') && r.includes('"state":"approved"')))
+check('填了理由后审批按钮还在', clickable(tree, '通过') !== undefined)
+// 手动刷新会重读 /history；选中的还是同一轮，不能把正在写的理由冲掉
+clickable(tree, '读取').props.onClick()
+tree = await settle(createElement(Panel, {}))
+const reasonAfterRefresh = inputByPlaceholder(tree, '这一版为什么通过')
+check('重读历史不会冲掉正在写的审批理由', reasonAfterRefresh !== undefined && reasonAfterRefresh.props.value === '这一版可以定稿', String(reasonAfterRefresh?.props?.value))
+clickable(tree, '通过').props.onClick()
+tree = await settle(createElement(Panel, {}))
+const decideCalls = requests.filter((r) => r.startsWith('POST') && r.includes('/decide'))
+check('发出了审批写请求', decideCalls.length === 1 && decideCalls[0].includes('"state":"approved"'), decideCalls[0])
+check('审批请求带着理由', decideCalls[0].includes('"note":"这一版可以定稿"'), decideCalls[0])
 check('写完后重新拉取历史', requests.filter((url) => url.includes('/history?dir=')).length >= 2)
 check('该轮变成「已通过」', allText(tree).includes('已通过'))
+
+// 再点开同一轮：理由从记录里带回输入框，悬停卡也显示——下次打开不会丢
+const pickAgain = findAll(tree, (node) => node.host === 'div' && allText(node).includes('修正乙苯转化率') && typeof node.props.onClick === 'function')[0]
+pickAgain.props.onClick()
+tree = await settle(createElement(Panel, {}))
+const reasonAgain = inputByPlaceholder(tree, '这一版为什么通过')
+check('重新打开时理由回填进输入框', reasonAgain !== undefined && reasonAgain.props.value === '这一版可以定稿', String(reasonAgain?.props?.value))
+const pickedRowAgain = findAll(tree, (node) => node.host === 'div' && allText(node).includes('修正乙苯转化率') && typeof node.props.onMouseEnter === 'function')[0]
+pickedRowAgain.props.onMouseEnter({ currentTarget: { getBoundingClientRect: () => ({ top: 120, right: 260 }) } })
+tree = await settle(createElement(Panel, {}))
+check('悬停卡显示审批理由', allText(tree).includes('你的意见') && allText(tree).includes('这一版可以定稿'))
+pickedRowAgain.props.onClick()
+tree = await settle(createElement(Panel, {}))
 
 /* ==================== 目录里多了内容：自动检测 + 手动刷新 ==================== */
 
